@@ -1,0 +1,44 @@
+name: 'Code quality'
+description: 'Checking code quality'
+inputs:
+  python-version:
+    description: Input python version installing
+    required: true
+    default: '3.9'
+  ci-job-token:
+    description: Input ci token to access gitlab repo
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install poetry
+      shell: bash
+      run: pipx install poetry
+    - uses: actions/setup-python@v4
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: 'poetry'
+    - name: Run config token
+      shell: bash
+      run: poetry config http-basic.typless gitlab-ci-token ${{ inputs.ci-job-token }}
+    - name: Install dependencies
+      shell: bash
+      run: poetry install
+      working-directory: ./services/minimax
+    - name: Run black
+      shell: bash
+      run: poetry run black . --check
+      working-directory: ./services/minimax
+    - name: Run isort
+      shell: bash
+      run: poetry run isort . --check-only --profile black
+      working-directory: ./services/minimax
+    - name: Run flake8
+      shell: bash
+      run: poetry run flake8 .
+      working-directory: ./services/minimax
+    - name: Run bandit
+      shell: bash
+      run: poetry run bandit .
+      working-directory: ./services/minimax

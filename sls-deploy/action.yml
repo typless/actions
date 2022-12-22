@@ -1,0 +1,46 @@
+name: 'Sls deploy'
+description: 'Deploying serverless'
+inputs:
+  python-version:
+    description: Input python version installing
+    required: true
+  ci-job-token:
+    description: Input ci token to access gitlab repo
+    required: true
+  working-dir:
+    description: input working directory
+    required: true
+  node-version:
+    description: input node version installing
+    required: true
+  stage:
+    description: Stage where to deploy
+    required: true
+runs:
+
+  using: composite
+  steps:
+    - name: Install poetry
+      run: pipx install poetry
+      shell: bash
+    - uses: actions/setup-python@v4
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: 'poetry'
+    - name: Run config token
+      shell: bash
+      run: poetry config http-basic.typless gitlab-ci-token ${{ inputs.ci-job-token }}
+      working-directory: ${{ inputs.working-dir }}
+    - name: Setup node
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ inputs.node-version}}
+        cache: 'yarn'
+        cache-dependency-path: ${{ inputs.working-dir }}/yarn.lock
+    - run: yarn install --frozen-lockfile
+      working-directory: ${{ inputs.working-dir }}
+      shell: bash
+    - name: Deploy
+      run: yarn run sls deploy --verbose --stage  ${{ inputs.stage }}
+      working-directory: ${{ inputs.working-dir }}
+      shell: bash

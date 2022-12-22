@@ -1,0 +1,38 @@
+name: 'Run Tests'
+description: 'Runnning tests'
+inputs:
+  python-version:
+    description: Input python version installing
+    required: true
+    default: '3.9'
+  ci-job-token:
+    description: Input ci token to access gitlab repo
+    required: true
+  working-dir:
+    description: input working directory
+    required: true
+  test-args:
+    description: Arguments added to pytest
+    required: true
+runs:
+
+  using: composite
+  steps:
+    - name: Install poetry
+      run: pipx install poetry
+      shell: bash
+    - uses: actions/setup-python@v4
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: 'poetry'
+    - name: Run config token
+      shell: bash
+      run: poetry config http-basic.typless gitlab-ci-token ${{ inputs.ci-job-token }}
+    - name: Install dependencies
+      shell: bash
+      run: poetry install
+      working-directory: ${{ inputs.working-dir }}
+    - name: Run tests
+      shell: bash
+      working-directory: ${{ inputs.working-dir }}
+      run: poetry run pytest ${{ inputs.test-args }}

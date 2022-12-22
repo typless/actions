@@ -8,6 +8,9 @@ inputs:
   ci-job-token:
     description: Input ci token to access gitlab repo
     required: true
+  working-dir:
+    description: Input ci token to access gitlab repo
+    required: true
 
 runs:
   using: composite
@@ -25,7 +28,7 @@ runs:
     - name: Install dependencies
       shell: bash
       run: poetry install
-      working-directory: ./services/minimax
+      working-directory:  ${{ inputs.working-dir }}
     - name: Run black
       shell: bash
       run: poetry run black . --check
@@ -33,12 +36,12 @@ runs:
     - name: Run isort
       shell: bash
       run: poetry run isort . --check-only --profile black
-      working-directory: ./services/minimax
+      working-directory: ${{ inputs.working-dir }}
     - name: Run flake8
       shell: bash
       run: poetry run flake8 .
-      working-directory: ./services/minimax
+      working-directory:  ${{ inputs.working-dir }}
     - name: Run bandit
       shell: bash
       run: poetry run bandit .
-      working-directory: ./services/minimax
+      working-directory:  ${{ inputs.working-dir }}

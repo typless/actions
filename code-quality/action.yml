@@ -32,7 +32,7 @@ runs:
     - name: Run black
       shell: bash
       run: poetry run black . --check
-      working-directory: ./services/minimax
+      working-directory: ${{ inputs.working-dir }}
     - name: Run isort
       shell: bash
       run: poetry run isort . --check-only --profile black

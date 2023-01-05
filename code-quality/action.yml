@@ -48,3 +48,6 @@ runs:
       shell: bash
       run: poetry run bandit .
       working-directory:  ${{ inputs.working-dir }}
+    - name: Run safety check
+      shell: bash
+      run: poetry run safety check || true

@@ -47,7 +47,8 @@ runs:
       shell: bash
     - name: Poetry export
       if: "${{ github.event.inputs.run-poetry-export != '' }}"
-      run: poetry export --without-hashes --with-credentials -f requirements.txt > requirements.txt 
+      run: poetry export --without-hashes --with-credentials -f requirements.txt > requirements.txt
+      shell: bash
     - name: Deploy
       run: yarn run sls deploy --verbose --stage  ${{ inputs.stage }}
       working-directory: ${{ inputs.working-dir }}

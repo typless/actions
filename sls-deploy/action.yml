@@ -46,12 +46,11 @@ runs:
       working-directory: ${{ inputs.working-dir }}
       shell: bash
     - name: DEBUGLOG
-      env:
         DEBUG: ${{ github.event.inputs.run-poetry-export }}
-      run: echo "$DEBUG"
+      run: echo ${{ github.event.inputs.run-poetry-export }}
       shell: bash
     - name: Poetry export
-      if: ${{ github.event.inputs.run-poetry-export == true }}
+      if: "${{ github.event.inputs.run-poetry-export != '' }}"
       run: poetry export --without-hashes --with-credentials -f requirements.txt > requirements.txt
       shell: bash
     - name: Deploy

@@ -16,6 +16,9 @@ inputs:
   test-args:
     description: Arguments added to pytest
     required: true
+  poetry-virtualenvs:
+    description: Set to true if poetry should use virtualenvs.in-project
+    required: false
 runs:
 
   using: composite
@@ -30,6 +33,10 @@ runs:
     - name: Run config token
       shell: bash
       run: poetry config http-basic.typless ${{ inputs.aws-username }} ${{ inputs.aws-password }}
+    - name: Set poetry virtualenvs
+      if: "${{ inputs.poetry-virtualenvs != '' }}"
+      shell: bash
+      run: poetry config virtualenvs.in-project true
     - name: Install dependencies
       shell: bash
       run: poetry install

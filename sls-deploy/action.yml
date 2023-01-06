@@ -46,9 +46,7 @@ runs:
       working-directory: ${{ inputs.working-dir }}
       shell: bash
     - name: DEBUGLOG
-      env:
-        DEBUG: ${{ github.event.inputs.run-poetry-export }}
-      run: echo "poetry export set to: $DEBUG"
+      run: echo "poetry export set to: ${{ github.event.inputs.run-poetry-export }}"
       shell: bash
     - name: Poetry export
       if: ${{ github.event.inputs.run-poetry-export == true }}

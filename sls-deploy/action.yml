@@ -54,7 +54,7 @@ runs:
       run: yarn run sls deploy --verbose --stage  ${{ inputs.stage }}
       working-directory: ${{ inputs.working-dir }}
       shell: bash
-      - name: Serverless doctor
+    - name: Serverless doctor
       run: yarn run serverless doctor
       working-directory: ${{ inputs.working-dir }}
       shell: bash

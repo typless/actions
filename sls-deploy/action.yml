@@ -48,8 +48,9 @@ runs:
     - name: Poetry export
       if: "${{ inputs.run-poetry-export != '' }}"
       run: poetry export --without-hashes --with-credentials -f requirements.txt > requirements.txt
+      working-directory: ${{ inputs.working-dir }}
       shell: bash
-    #- name: Deploy
-     # run: yarn run sls deploy --verbose --stage  ${{ inputs.stage }}
-      #working-directory: ${{ inputs.working-dir }}
-      #shell: bash
+    - name: Deploy
+      run: yarn run sls deploy --verbose --stage  ${{ inputs.stage }}
+      working-directory: ${{ inputs.working-dir }}
+      shell: bash

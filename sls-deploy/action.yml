@@ -10,14 +10,17 @@ inputs:
   aws-password:
     description: Input aws password to access aws bucket
   working-dir:
-    description: input working directory
+    description: Input working directory
     required: true
   node-version:
-    description: input node version installing
+    description: Input node version installing
     required: true
   stage:
     description: Stage where to deploy
     required: true
+  sls-additional-args:
+    description: String of additional arguments for the sls command
+    required: false
 runs:
 
   using: composite
@@ -43,6 +46,6 @@ runs:
       working-directory: ${{ inputs.working-dir }}
       shell: bash
     - name: Deploy
-      run: yarn run sls deploy --verbose --stage  ${{ inputs.stage }}
+      run: yarn run sls deploy --verbose --stage  ${{ inputs.stage }} ${{ inputs.sls-additional-args }}
       working-directory: ${{ inputs.working-dir }}
       shell: bash

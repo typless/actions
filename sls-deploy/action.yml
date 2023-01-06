@@ -45,6 +45,8 @@ runs:
     - run: yarn install --frozen-lockfile
       working-directory: ${{ inputs.working-dir }}
       shell: bash
+    - name: DEBUGLOG
+      run: echo ${{ github.event.inputs.run-poetry-export }}
     - name: Poetry export
       if: ${{ github.event.inputs.run-poetry-export == true }}
       run: poetry export --without-hashes --with-credentials -f requirements.txt > requirements.txt

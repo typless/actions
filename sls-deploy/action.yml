@@ -18,8 +18,8 @@ inputs:
   stage:
     description: Stage where to deploy
     required: true
-  sls-additional-args:
-    description: String of additional arguments for the sls command
+  run-poetry-export:
+    description: Poetry export has to be run on some deploys (boolean)
     required: false
 runs:
 
@@ -45,7 +45,10 @@ runs:
     - run: yarn install --frozen-lockfile
       working-directory: ${{ inputs.working-dir }}
       shell: bash
+    - name: Poetry export
+      if: "${{ github.event.inputs.run-poetry-export != '' }}"
+      run: poetry export --without-hashes --with-credentials -f requirements.txt > requirements.txt 
     - name: Deploy
-      run: yarn run sls deploy --verbose --stage  ${{ inputs.stage }} ${{ inputs.sls-additional-args }}
+      run: yarn run sls deploy --verbose --stage  ${{ inputs.stage }}
       working-directory: ${{ inputs.working-dir }}
       shell: bash

@@ -19,6 +19,10 @@ inputs:
   poetry-virtualenvs:
     description: Set to true if poetry should use virtualenvs.in-project
     required: false
+  coverage-report-path:
+    description: Set path to save coverage report. If left empty no report will be saved
+    required: false
+
 runs:
 
   using: composite
@@ -45,3 +49,10 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working-dir }}
       run: poetry run pytest ${{ inputs.test-args }}
+    - name: Archive test results
+      if: "${{ inputs.coverage-report-path != '' }}"
+      uses: actions/upload-artifact@v3
+      with:
+        name: test-report
+        path:  ${{ inputs.coverage-report-path }}
+        retention-days: 5

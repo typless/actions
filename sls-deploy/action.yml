@@ -42,7 +42,6 @@ runs:
       run: |
         echo ${{ inputs.python-version }}
         python --version
-        py --version
         poetry --version
         poetry env info
 

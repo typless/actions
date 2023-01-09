@@ -29,9 +29,18 @@ runs:
       with:
         python-version: ${{ inputs.python-version }}
         cache: 'poetry'
+
+    - name: Debug logs1
+      shell: bash
+      working-directory: ${{ inputs.working-dir }}
+      run: |
+        echo ${{ inputs.python-version }}
+        python --version
+
     - name: Install poetry
       run: pipx install poetry
       shell: bash
+
     - name: Debug logs
       shell: bash
       working-directory: ${{ inputs.working-dir }}

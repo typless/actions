@@ -58,7 +58,7 @@ runs:
       working-directory: ${{ inputs.working-dir }}
       shell: bash
     - name: Serverless doctor
-      if: "${{ inputs.run-serverless-doctor != '' }}"
+      if: "failure() && ${{ inputs.run-serverless-doctor != '' }}"
       run: yarn run serverless doctor
       working-directory: ${{ inputs.working-dir }}
       shell: bash

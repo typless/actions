@@ -25,17 +25,13 @@ runs:
 
   using: composite
   steps:
-    - name: Install poetry
-      run: pipx install poetry
-      shell: bash
-    - name: Install poetry
-      run: pipx install poetry
-      shell: bash
     - uses: actions/setup-python@v4
       with:
         python-version: ${{ inputs.python-version }}
         cache: 'poetry'
-
+    - name: Install poetry
+      run: pipx install poetry
+      shell: bash
     - name: Debug logs
       shell: bash
       working-directory: ${{ inputs.working-dir }}

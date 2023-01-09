@@ -21,9 +21,6 @@ inputs:
   run-poetry-export:
     description: Poetry export has to be run on some deploys (boolean)
     required: false
-  run-serverless-doctor:
-    description: Run serverless doctor to debug issues with sls deploy (boolean)
-    required: false
 runs:
 
   using: composite
@@ -31,10 +28,24 @@ runs:
     - name: Install poetry
       run: pipx install poetry
       shell: bash
+    - name: Install poetry
+      run: pipx install poetry
+      shell: bash
     - uses: actions/setup-python@v4
       with:
         python-version: ${{ inputs.python-version }}
         cache: 'poetry'
+
+    - name: Debug logs
+      shell: bash
+      working-directory: ${{ inputs.working-dir }}
+      run: |
+        echo ${{ inputs.python-version }}
+        python --version
+        py --version
+        poetry --version
+        poetry env info
+
     - name: Run config token
       shell: bash
       run: poetry config http-basic.typless ${{ inputs.aws-username }} ${{ inputs.aws-password }}

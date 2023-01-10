@@ -22,13 +22,11 @@ inputs:
     description: Poetry export has to be run on some deploys (boolean)
     required: false
 runs:
-
   using: composite
   steps:
     - uses: actions/setup-python@v4
       with:
         python-version: ${{ inputs.python-version }}
-
     - name: Debug logs1
       shell: bash
       working-directory: ${{ inputs.working-dir }}

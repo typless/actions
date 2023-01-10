@@ -1,0 +1,78 @@
+name: 'Sls deploy'
+description: 'Deploying serverless'
+inputs:
+  python-version:
+    description: Input python version installing
+    required: true
+  aws-username:
+    description: Input aws username to access aws bucket
+    required: true
+  aws-password:
+    description: Input aws password to access aws bucket
+  working-dir:
+    description: Input working directory
+    required: true
+  node-version:
+    description: Input node version installing
+    required: true
+  stage:
+    description: Stage where to deploy
+    required: true
+  run-poetry-export:
+    description: Poetry export has to be run on some deploys (boolean)
+    required: false
+runs:
+
+  using: composite
+  steps:
+    - uses: actions/setup-python@v4
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Debug logs1
+      shell: bash
+      working-directory: ${{ inputs.working-dir }}
+      run: |
+        echo ${{ inputs.python-version }}
+        python --version
+
+    - name: Install poetry
+      run: pip install poetry
+      shell: bash
+
+    - name: Debug logs
+      shell: bash
+      working-directory: ${{ inputs.working-dir }}
+      run: |
+        echo ${{ inputs.python-version }}
+        python --version
+        poetry --version
+        poetry env info
+
+    - name: Run config token
+      shell: bash
+      run: poetry config http-basic.typless ${{ inputs.aws-username }} ${{ inputs.aws-password }}
+      working-directory: ${{ inputs.working-dir }}
+    - name: Setup node
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ inputs.node-version}}
+        cache: 'yarn'
+        cache-dependency-path: ${{ inputs.working-dir }}/yarn.lock
+    - run: yarn install --frozen-lockfile
+      working-directory: ${{ inputs.working-dir }}
+      shell: bash
+    - name: Poetry export
+      if: "${{ inputs.run-poetry-export != '' }}"
+      run: poetry export --without-hashes --with-credentials -f requirements.txt > requirements.txt
+      working-directory: ${{ inputs.working-dir }}
+      shell: bash
+    - name: Deploy
+      run: yarn run sls deploy --verbose --stage  ${{ inputs.stage }}
+      working-directory: ${{ inputs.working-dir }}
+      shell: bash
+    - name: Serverless doctor
+      if: failure()
+      run: yarn run serverless doctor
+      working-directory: ${{ inputs.working-dir }}
+      shell: bash

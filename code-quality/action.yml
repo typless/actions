@@ -5,8 +5,11 @@ inputs:
     description: Input python version installing
     required: true
     default: '3.9'
-  ci-job-token:
-    description: Input ci token to access gitlab repo
+  aws-username:
+    description: Input aws username to access aws bucket
+    required: true
+  aws-password:
+    description: Input aws password to access aws bucket
     required: true
   working-dir:
     description: Input ci token to access gitlab repo
@@ -24,7 +27,7 @@ runs:
         cache: 'poetry'
     - name: Run config token
       shell: bash
-      run: poetry config http-basic.typless gitlab-ci-token ${{ inputs.ci-job-token }}
+      run: poetry config http-basic.typless ${{ inputs.aws-username }} ${{ inputs.aws-password }}
     - name: Install dependencies
       shell: bash
       run: poetry install
@@ -32,7 +35,7 @@ runs:
     - name: Run black
       shell: bash
       run: poetry run black . --check
-      working-directory: ./services/minimax
+      working-directory: ${{ inputs.working-dir }}
     - name: Run isort
       shell: bash
       run: poetry run isort . --check-only --profile black
@@ -45,3 +48,6 @@ runs:
       shell: bash
       run: poetry run bandit .
       working-directory:  ${{ inputs.working-dir }}
+    - name: Run safety check
+      shell: bash
+      run: poetry run safety check || true

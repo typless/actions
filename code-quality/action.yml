@@ -28,9 +28,11 @@ runs:
     - name: Set Poetry environment
       shell: bash
       run: poetry env use ${{ inputs.python-version }}
+      working-directory:  ${{ inputs.working-dir }}
     - name: Run config token
       shell: bash
       run: poetry config http-basic.typless ${{ inputs.aws-username }} ${{ inputs.aws-password }}
+      working-directory:  ${{ inputs.working-dir }}
     - name: Install dependencies
       shell: bash
       run: poetry install
@@ -54,3 +56,4 @@ runs:
     - name: Run safety check
       shell: bash
       run: poetry run safety check || true
+      working-directory:  ${{ inputs.working-dir }}

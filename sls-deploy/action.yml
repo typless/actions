@@ -33,7 +33,6 @@ runs:
       run: |
         echo ${{ inputs.python-version }}
         python --version
-
     - name: Install poetry
       run: pip install poetry
       shell: bash

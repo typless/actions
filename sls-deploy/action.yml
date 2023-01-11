@@ -1,14 +1,6 @@
 name: 'Sls deploy'
 description: 'Deploying serverless'
 inputs:
-  python-version:
-    description: Input python version installing
-    required: true
-  aws-username:
-    description: Input aws username to access aws bucket
-    required: true
-  aws-password:
-    description: Input aws password to access aws bucket
   working-dir:
     description: Input working directory
     required: true
@@ -18,9 +10,6 @@ inputs:
   stage:
     description: Stage where to deploy
     required: true
-  run-poetry-export:
-    description: Poetry export has to be run on some deploys (boolean)
-    required: false
 runs:
 
   using: composite
@@ -33,11 +22,6 @@ runs:
         cache: 'yarn'
         cache-dependency-path: ${{ inputs.working-dir }}/yarn.lock
     - run: yarn install --frozen-lockfile
-      working-directory: ${{ inputs.working-dir }}
-      shell: bash
-    - name: Poetry export
-      if: "${{ inputs.run-poetry-export != '' }}"
-      run: poetry export --without-hashes --with-credentials -f requirements.txt > requirements.txt
       working-directory: ${{ inputs.working-dir }}
       shell: bash
     - name: Deploy

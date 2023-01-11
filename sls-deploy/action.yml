@@ -25,16 +25,6 @@ runs:
 
   using: composite
   steps:
-    - name: Install poetry
-      run: pipx install poetry
-      shell: bash
-    - uses: actions/setup-python@v4
-      with:
-        python-version: ${{ inputs.python-version }}
-        cache: 'poetry'
-    - name: Run config token
-      shell: bash
-      run: poetry config http-basic.typless ${{ inputs.aws-username }} ${{ inputs.aws-password }}
       working-directory: ${{ inputs.working-dir }}
     - name: Setup node
       uses: actions/setup-node@v3

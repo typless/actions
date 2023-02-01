@@ -13,7 +13,7 @@ inputs:
     required: true
   working-dir:
     description: Input ci token to access gitlab repo
-    required: false
+    required: true
 
 runs:
   using: composite
@@ -39,27 +39,34 @@ runs:
       id: cached-poetry-dependencies
       uses: actions/cache@v3
       with:
-        path: .venv
+        path: ${{ inputs.working-dir }}/.venv
         key: venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/poetry.lock') }}
     - name: Run config token
       shell: bash
       run: poetry config http-basic.typless ${{ inputs.aws-username }} ${{ inputs.aws-password }}
+      working-directory: ${{ inputs.working-dir }}
     - name: Install dependencies
       if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
       shell: bash
       run: poetry install --no-interaction --no-root
+      working-directory: ${{ inputs.working-dir }}
     - name: Run black
       shell: bash
       run: poetry run black . --check
+      working-directory:  ${{ inputs.working-dir }}
     - name: Run isort
       shell: bash
       run: poetry run isort . --check-only --profile black
+      working-directory:  ${{ inputs.working-dir }}
     - name: Run flake8
       shell: bash
       run: poetry run flake8 .
+      working-directory:  ${{ inputs.working-dir }}
     - name: Run bandit
       shell: bash
       run: poetry run bandit .
+      working-directory:  ${{ inputs.working-dir }}
     - name: Run safety check
       shell: bash
       run: poetry run safety check || true
+      working-directory:  ${{ inputs.working-dir }}

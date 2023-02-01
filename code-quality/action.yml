@@ -46,6 +46,7 @@ runs:
       run: poetry config http-basic.typless ${{ inputs.aws-username }} ${{ inputs.aws-password }}
     - name: Install dependencies
       if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
+      shell: bash
       run: poetry install --no-interaction --no-root
     - name: Run black
       shell: bash

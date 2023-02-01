@@ -27,25 +27,18 @@ runs:
     - uses: actions/setup-python@v4
       with:
         python-version: ${{ inputs.python-version }}
-    - name: Debug logs1
-      shell: bash
-      working-directory: ${{ inputs.working-dir }}
-      run: |
-        echo ${{ inputs.python-version }}
-        python --version
-    - name: Install poetry
-      run: pip install poetry
-      shell: bash
-
-    - name: Debug logs
-      shell: bash
-      working-directory: ${{ inputs.working-dir }}
-      run: |
-        echo ${{ inputs.python-version }}
-        python --version
-        poetry --version
-        poetry env info
-
+    - name: Load cached Poetry installation
+      id: cached-poetry
+      uses: actions/cache@v3
+      with:
+        path: ~/.local  # the path depends on the OS
+        key: poetry-0  # increment to reset cache
+    - name: Install Poetry
+      if: steps.cached-poetry.outputs.cache-hit != 'true'
+      uses: snok/install-poetry@v1
+      with:
+        virtualenvs-create: true
+        virtualenvs-in-project: true
     - name: Run config token
       shell: bash
       run: poetry config http-basic.typless ${{ inputs.aws-username }} ${{ inputs.aws-password }}

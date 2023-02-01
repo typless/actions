@@ -16,9 +16,6 @@ inputs:
   test-args:
     description: Arguments added to pytest
     required: true
-  poetry-virtualenvs:
-    description: Set to true if poetry should use virtualenvs.in-project
-    required: false
   coverage-report-path:
     description: Set path to save coverage report. If left empty no report will be saved
     required: false
@@ -27,29 +24,37 @@ runs:
 
   using: composite
   steps:
-    - name: Install poetry
-      run: pipx install poetry
-      shell: bash
-    - uses: actions/setup-python@v4
+    - name: Set up python
+      id: setup-python
+      uses: actions/setup-python@v4
       with:
         python-version: ${{ inputs.python-version }}
-        cache: 'poetry'
-    - name: Set Poetry environment
-      shell: bash
-      run: poetry env use ${{ inputs.python-version }}
-      working-directory:  ${{ inputs.working-dir }}
+    - name: Load cached Poetry installation
+      id: cached-poetry
+      uses: actions/cache@v3
+      with:
+        path: ~/.local  # the path depends on the OS
+        key: poetry-0  # increment to reset cache
+    - name: Install Poetry
+      if: steps.cached-poetry.outputs.cache-hit != 'true'
+      uses: snok/install-poetry@v1
+      with:
+        virtualenvs-create: true
+        virtualenvs-in-project: true
+    - name: Load cached venv
+      id: cached-poetry-dependencies
+      uses: actions/cache@v3
+      with:
+        path: ${{ inputs.working-dir }}/.venv
+        key: venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/poetry.lock') }}
     - name: Run config token
       shell: bash
       run: poetry config http-basic.typless ${{ inputs.aws-username }} ${{ inputs.aws-password }}
-      working-directory:  ${{ inputs.working-dir }}
-    - name: Set poetry virtualenvs
-      if: "${{ inputs.poetry-virtualenvs != '' }}"
-      shell: bash
-      run: poetry config virtualenvs.in-project true
-      working-directory:  ${{ inputs.working-dir }}
+      working-directory: ${{ inputs.working-dir }}
     - name: Install dependencies
+      if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
       shell: bash
-      run: poetry install
+      run: poetry install --no-interaction --no-root
       working-directory: ${{ inputs.working-dir }}
     - name: Run tests
       shell: bash

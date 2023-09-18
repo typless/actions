@@ -1,0 +1,41 @@
+name: 'Install python dependencies'
+description: 'Installation of python dependencies'
+inputs:
+  python-version:
+    description: Input python version
+    required: true
+  poetry-version:
+    description: Input poetry version
+    required: false
+    default: "1.5.1"
+  aws-pypi-username:
+    description: Input aws username to access aws pypi bucket
+    required: true
+  aws-pypi-password:
+    description: Input aws password to access aws pypi bucket
+    required: true
+  working-directory:
+    description: Input working directory
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Set up poetry
+      uses: typless/actions/setup-poetry@v3.0
+      with:
+        python-version: ${{ inputs.python-version }}
+        version: ${{ inputs.poetry-version }}
+        aws-pypi-username: ${{ inputs.aws-pypi-username }}
+        aws-pypi-password: ${{ inputs.aws-pypi-password }}
+    - name: Load cached venv
+      id: cached-poetry-dependencies
+      uses: actions/cache@v3
+      with:
+        path: ${{ inputs.working-directory }}/.venv
+        key: venv-${{ runner.os }}-${{ inputs.python-version }}-${{ hashFiles(format('{0}/{1}',inputs.working-directory,'poetry.lock')) }}
+    - name: Install dependencies
+      if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
+      shell: bash
+      run: poetry install --no-interaction --no-root
+      working-directory: ${{ inputs.working-directory }}

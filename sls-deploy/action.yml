@@ -1,68 +1,34 @@
 name: 'Sls deploy'
 description: 'Deploying serverless'
 inputs:
-  python-version:
-    description: Input python version installing
-    required: true
-  aws-username:
-    description: Input aws username to access aws bucket
-    required: true
-  aws-password:
-    description: Input aws password to access aws bucket
-  working-dir:
-    description: Input working directory
-    required: true
   node-version:
-    description: Input node version installing
+    description: Input node version
     required: true
   stage:
     description: Stage where to deploy
     required: true
-  run-poetry-export:
-    description: Poetry export has to be run on some deploys (boolean)
-    required: false
+  working-directory:
+    description: Input working directory
+    required: true
+
 runs:
   using: composite
   steps:
-    - uses: actions/setup-python@v4
-      with:
-        python-version: ${{ inputs.python-version }}
-    - name: Load cached Poetry installation
-      id: cached-poetry
-      uses: actions/cache@v3
-      with:
-        path: ~/.local  # the path depends on the OS
-        key: poetry-0  # increment to reset cache
-    - name: Install Poetry
-      if: steps.cached-poetry.outputs.cache-hit != 'true'
-      uses: snok/install-poetry@v1
-      with:
-        virtualenvs-create: true
-        virtualenvs-in-project: true
-    - name: Run config token
-      shell: bash
-      run: poetry config http-basic.typless ${{ inputs.aws-username }} ${{ inputs.aws-password }}
-      working-directory: ${{ inputs.working-dir }}
     - name: Setup node
       uses: actions/setup-node@v3
       with:
         node-version: ${{ inputs.node-version}}
         cache: 'yarn'
-        cache-dependency-path: ${{ inputs.working-dir }}/yarn.lock
+        cache-dependency-path: ${{ inputs.working-directory }}/yarn.lock
     - run: yarn install --frozen-lockfile
-      working-directory: ${{ inputs.working-dir }}
-      shell: bash
-    - name: Poetry export
-      if: "${{ inputs.run-poetry-export != '' }}"
-      run: poetry export --without-hashes --with-credentials -f requirements.txt > requirements.txt
-      working-directory: ${{ inputs.working-dir }}
+      working-directory: ${{ inputs.working-directory }}
       shell: bash
     - name: Deploy
-      run: yarn run sls deploy --verbose --stage  ${{ inputs.stage }}
-      working-directory: ${{ inputs.working-dir }}
+      run: yarn run sls deploy --verbose --stage ${{ inputs.stage }}
+      working-directory: ${{ inputs.working-directory }}
       shell: bash
     - name: Serverless doctor
       if: failure()
       run: yarn run serverless doctor
-      working-directory: ${{ inputs.working-dir }}
+      working-directory: ${{ inputs.working-directory }}
       shell: bash

@@ -2,71 +2,50 @@ name: 'Code quality'
 description: 'Checking code quality'
 inputs:
   python-version:
-    description: Input python version installing
+    description: Input python version
     required: true
-    default: '3.9'
-  aws-username:
-    description: Input aws username to access aws bucket
+  poetry-version:
+    description: Input poetry version
+    required: false
+    default: "latest"
+  aws-pypi-username:
+    description: Input aws username to access aws pypi bucket
     required: true
-  aws-password:
-    description: Input aws password to access aws bucket
+  aws-pypi-password:
+    description: Input aws password to access aws pypi bucket
     required: true
-  working-dir:
-    description: Input ci token to access gitlab repo
+  working-directory:
+    description: Input working directory
     required: true
 
 runs:
   using: composite
   steps:
-    - name: Set up python
-      id: setup-python
-      uses: actions/setup-python@v4
+    - name: Install python dependencies
+      uses: typless/actions/install-python-dependencies@v3.0
       with:
         python-version: ${{ inputs.python-version }}
-    - name: Load cached Poetry installation
-      id: cached-poetry
-      uses: actions/cache@v3
-      with:
-        path: ~/.local  # the path depends on the OS
-        key: poetry-0  # increment to reset cache
-    - name: Install Poetry
-      if: steps.cached-poetry.outputs.cache-hit != 'true'
-      uses: snok/install-poetry@v1
-      with:
-        virtualenvs-create: true
-        virtualenvs-in-project: true
-    - name: Load cached venv
-      id: cached-poetry-dependencies
-      uses: actions/cache@v3
-      with:
-        path: ${{ inputs.working-dir }}/.venv
-        key: venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('**/poetry.lock') }}
-    - name: Run config token
-      shell: bash
-      run: poetry config http-basic.typless ${{ inputs.aws-username }} ${{ inputs.aws-password }}
-      working-directory: ${{ inputs.working-dir }}
-    - name: Install dependencies
-      if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
-      shell: bash
-      run: poetry install --no-interaction --no-root
-      working-directory: ${{ inputs.working-dir }}
+        poetry-version: ${{ inputs.poetry-version }}
+        aws-pypi-username: ${{ inputs.aws-pypi-username }}
+        aws-pypi-password: ${{ inputs.aws-pypi-password }}
+        working-directory: ${{ inputs.working-directory }}
     - name: Run black
       shell: bash
       run: poetry run black . --check
-      working-directory:  ${{ inputs.working-dir }}
+      working-directory:  ${{ inputs.working-directory }}
     - name: Run isort
       shell: bash
       run: poetry run isort . --check-only --profile black
-      working-directory:  ${{ inputs.working-dir }}
+      working-directory:  ${{ inputs.working-directory }}
     - name: Run flake8
       shell: bash
       run: poetry run flake8 .
-      working-directory:  ${{ inputs.working-dir }}
+      working-directory:  ${{ inputs.working-directory }}
     - name: Run bandit
       shell: bash
       run: poetry run bandit .
-      working-directory:  ${{ inputs.working-dir }}
+      working-directory:  ${{ inputs.working-directory }}
     - name: Run safety check
       shell: bash
       run: poetry run safety check || true
-      working-directory:  ${{ inputs.working-dir }}
+      working-directory:  ${{ inputs.working-directory }}

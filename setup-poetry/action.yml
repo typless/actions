@@ -1,0 +1,44 @@
+name: 'Setup poetry'
+description: 'Setting up poetry'
+inputs:
+  python-version:
+    description: Input python version
+    required: true
+  version:
+    description: Input poetry version
+    required: true
+    default: "1.5.1"
+  aws-pypi-username:
+    description: Input aws username to access aws pypi bucket
+    required: false
+  aws-pypi-password:
+    description: Input aws password to access aws pypi bucket
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - name: Setup python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ inputs.python-version }}
+    - name: Load cached Poetry installation
+      id: cached-poetry
+      uses: actions/cache@v3
+      with:
+        path: ~/.local
+        key: poetry-${{ inputs.version }}-${{ inputs.python-version }}
+    - name: Install Poetry
+      if: steps.cached-poetry.outputs.cache-hit != 'true'
+      uses: snok/install-poetry@v1
+      with:
+        version: ${{ inputs.version }}
+        virtualenvs-in-project: true
+    - name: Poetry config http basic for pypi repository
+      if: inputs.aws-pypi-username != '' && inputs.aws-pypi-password != ''
+      shell: bash
+      run: |
+        poetry config \
+          http-basic.typless \
+          ${{ inputs.aws-pypi-username }} \
+          ${{ inputs.aws-pypi-password }}

@@ -1,0 +1,16 @@
+name: 'Public IP'
+description: 'Get public ip'
+outputs:
+  ipv4:
+    description: Input aws access key id
+    value: ${{ steps.ip.outputs.ipv4 }}
+
+runs:
+  using: composite
+  steps:
+    - name: Public IP
+      shell: bash
+      id: ip
+      run: |
+        ip=$(curl -s https://checkip.amazonaws.com)
+        echo "ipv4=$ip" >> $GITHUB_OUTPUT

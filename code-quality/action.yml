@@ -7,7 +7,7 @@ inputs:
   poetry-version:
     description: Input poetry version
     required: false
-    default: "latest"
+    default: "1.5.1"
   aws-pypi-username:
     description: Input aws username to access aws pypi bucket
     required: true
@@ -29,23 +29,15 @@ runs:
         aws-pypi-username: ${{ inputs.aws-pypi-username }}
         aws-pypi-password: ${{ inputs.aws-pypi-password }}
         working-directory: ${{ inputs.working-directory }}
-    - name: Run black
-      shell: bash
-      run: poetry run black . --check
-      working-directory:  ${{ inputs.working-directory }}
-    - name: Run isort
-      shell: bash
-      run: poetry run isort . --check-only --profile black
-      working-directory:  ${{ inputs.working-directory }}
-    - name: Run flake8
-      shell: bash
-      run: poetry run flake8 .
-      working-directory:  ${{ inputs.working-directory }}
     - name: Run bandit
       shell: bash
-      run: poetry run bandit .
+      run: poetry run bandit -c pyproject.toml -r .
+      working-directory:  ${{ inputs.working-directory }}
+    - name: Run ruff check
+      shell: bash
+      run: poetry run ruff check
       working-directory:  ${{ inputs.working-directory }}
     - name: Run safety check
       shell: bash
-      run: poetry run safety check || true
+      run: poetry run safety check
       working-directory:  ${{ inputs.working-directory }}

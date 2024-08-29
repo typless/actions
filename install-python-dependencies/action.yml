@@ -21,7 +21,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Set up poetry
+    - name: Setup poetry
       uses: typless/actions/setup-poetry@v3.0
       with:
         python-version: ${{ inputs.python-version }}
@@ -30,10 +30,10 @@ runs:
         aws-pypi-password: ${{ inputs.aws-pypi-password }}
     - name: Load cached venv
       id: cached-poetry-dependencies
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ${{ inputs.working-directory }}/.venv
-        key: venv-${{ runner.os }}-${{ inputs.python-version }}-${{ hashFiles(format('{0}/{1}',inputs.working-directory,'poetry.lock')) }}
+        key: venv-${{ runner.os }}-${{ inputs.python-version }}-${{ hashFiles(format('{0}/{1}', inputs.working-directory, 'poetry.lock')) }}
     - name: Install dependencies
       if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
       shell: bash

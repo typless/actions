@@ -41,7 +41,7 @@ runs:
       run: poetry run pytest ${{ inputs.test-args }}
     - name: Archive test results
       if: inputs.coverage-report-path != ''
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: test-report
         path:  ${{ inputs.coverage-report-path }}

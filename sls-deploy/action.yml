@@ -7,7 +7,6 @@ inputs:
   region:
     description: Region where to deploy
     required: false
-    default: eu-west-1
   stage:
     description: Stage where to deploy
     required: true
@@ -28,9 +27,15 @@ runs:
       working-directory: ${{ inputs.working-directory }}
       shell: bash
     - name: Deploy
+      if: inputs.region != ''
+      shell: bash
       run: yarn run sls deploy --verbose --region ${{ inputs.region }} --stage ${{ inputs.stage }}
       working-directory: ${{ inputs.working-directory }}
+    - name: Deploy
+      if: inputs.region == ''
       shell: bash
+      run: yarn run sls deploy --verbose --stage ${{ inputs.stage }}
+      working-directory: ${{ inputs.working-directory }}
     - name: Serverless doctor
       if: failure()
       run: yarn run serverless doctor

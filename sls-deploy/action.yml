@@ -4,6 +4,10 @@ inputs:
   node-version:
     description: Input node version
     required: true
+  region:
+    description: Region where to deploy
+    required: false
+    default: eu-west-1
   stage:
     description: Stage where to deploy
     required: true
@@ -24,7 +28,7 @@ runs:
       working-directory: ${{ inputs.working-directory }}
       shell: bash
     - name: Deploy
-      run: yarn run sls deploy --verbose --stage ${{ inputs.stage }}
+      run: yarn run sls deploy --verbose --region ${{ inputs.region }} --stage ${{ inputs.stage }}
       working-directory: ${{ inputs.working-directory }}
       shell: bash
     - name: Serverless doctor

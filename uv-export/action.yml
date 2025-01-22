@@ -1,0 +1,45 @@
+name: 'Export python dependencies'
+description: 'Export python dependencies using poetry'
+inputs:
+  python-version:
+    description: Input python version
+    required: true
+  uv-version:
+    description: Input uv version
+    required: false
+    default: "0.5.21"
+  groups:
+    description: Input optional groups to be exported
+    required: false
+  working-directory:
+    description: Input working directory
+    required: true
+  aws-pypi-username:
+    description: Input aws username to access aws pypi bucket
+    required: true
+  aws-pypi-password:
+    description: Input aws password to access aws pypi bucket
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Set up poetry
+      uses: typless/actions/setup-uv@v4.0
+      with:
+        python-version: ${{ inputs.python-version }}
+        version: ${{ inputs.uv-version }}
+        working-directory: ${{ inputs.working-directory }}
+    - name: uv compile
+      shell: bash
+      run: |
+        uv export \
+        --no-hashes \
+        --format requirements-txt \
+        --no-dev \
+        --frozen > requirements.txt
+    - name: add external index
+      shell: bash
+      run: |
+        echo "--extra-index-url https://${{ inputs.aws-pypi-username }}:${{ inputs.aws-pypi-password }}@pypi.typless.com" | cat - requirements.txt > temp && mv temp requirements.txt
+      working-directory: ${{ inputs.working-directory }}

@@ -22,10 +22,10 @@ runs:
   using: composite
   steps:
     - name: Install python dependencies
-      uses: typless/actions/install-python-dependencies@v3.0
+      uses: typless/actions/install-python-dependencies@v4.0
       with:
         python-version: ${{ inputs.python-version }}
-        poetry-version: ${{ inputs.poetry-version }}
+        uv-version: ${{ inputs.poetry-version }}
         aws-pypi-username: ${{ inputs.aws-pypi-username }}
         aws-pypi-password: ${{ inputs.aws-pypi-password }}
         working-directory: ${{ inputs.working-directory }}

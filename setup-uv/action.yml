@@ -1,0 +1,27 @@
+name: 'Setup uv'
+description: 'Setting up uv'
+inputs:
+  python-version:
+    description: Input python version
+    required: true
+  version:
+    description: Input uv version
+    required: true
+    default: "0.5.18"
+  working-directory:
+    description: Input working directory
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Setup python
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ inputs.python-version }}
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        version: ${{ inputs.version }}
+        enable-cache: true
+        cache-dependency-glob: "${{inputs.working-directory}}/uv.lock"

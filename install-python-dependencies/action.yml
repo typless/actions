@@ -4,38 +4,27 @@ inputs:
   python-version:
     description: Input python version
     required: true
-  poetry-version:
-    description: Input poetry version
+  uv-version:
+    description: Input uv version
     required: false
-    default: "1.5.1"
-  aws-pypi-username:
-    description: Input aws username to access aws pypi bucket
-    required: true
-  aws-pypi-password:
-    description: Input aws password to access aws pypi bucket
-    required: true
+    default: "0.5.18"
   working-directory:
     description: Input working directory
     required: true
+  uv-install-arguments:
+    description: Additional arguments to be passed to uv installation eg. groups
+    required: false
 
 runs:
   using: composite
   steps:
-    - name: Setup poetry
-      uses: typless/actions/setup-poetry@v3.0
+    - name: Setup uv
+      uses: typless/actions/setup-uv@v4.0
       with:
         python-version: ${{ inputs.python-version }}
-        version: ${{ inputs.poetry-version }}
-        aws-pypi-username: ${{ inputs.aws-pypi-username }}
-        aws-pypi-password: ${{ inputs.aws-pypi-password }}
-    - name: Load cached venv
-      id: cached-poetry-dependencies
-      uses: actions/cache@v4
-      with:
-        path: ${{ inputs.working-directory }}/.venv
-        key: venv-${{ runner.os }}-${{ inputs.python-version }}-${{ hashFiles(format('{0}/{1}', inputs.working-directory, 'poetry.lock')) }}
+        version: ${{ inputs.uv-version }}
+        working-directory: ${{inputs.working-directory}}
     - name: Install dependencies
-      if: steps.cached-poetry-dependencies.outputs.cache-hit != 'true'
       shell: bash
-      run: poetry install --no-interaction --no-root
+      run: uv sync ${{ inputs.uv-install-arguments }}
       working-directory: ${{ inputs.working-directory }}

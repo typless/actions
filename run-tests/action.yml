@@ -4,10 +4,10 @@ inputs:
   python-version:
     description: Input python version
     required: true
-  poetry-version:
-    description: Input poetry version
-    required: false
-    default: "1.5.1"
+  uv-version:
+    description: Input uv version
+    required: true
+    default: "0.5.23"
   aws-pypi-username:
     description: Input aws username to access aws pypi bucket
     required: true
@@ -28,21 +28,15 @@ runs:
   using: composite
   steps:
     - name: Install python dependencies
-      uses: typless/actions/install-python-dependencies@v3.0
+      uses: typless/actions/install-python-dependencies@v4.0
       with:
         python-version: ${{ inputs.python-version }}
-        poetry-version: ${{ inputs.poetry-version }}
+        uv-version: ${{ inputs.uv-version }}
         aws-pypi-username: ${{ inputs.aws-pypi-username }}
         aws-pypi-password: ${{ inputs.aws-pypi-password }}
         working-directory: ${{ inputs.working-directory }}
+
     - name: Run tests
       shell: bash
       working-directory: ${{ inputs.working-directory }}
-      run: poetry run pytest ${{ inputs.test-args }}
-    - name: Archive test results
-      if: inputs.coverage-report-path != ''
-      uses: actions/upload-artifact@v4
-      with:
-        name: test-report
-        path:  ${{ inputs.coverage-report-path }}
-        retention-days: 5
+      run: uv run pytest ${{ inputs.test-args }}

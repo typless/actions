@@ -1,0 +1,49 @@
+name: 'Export python dependencies'
+description: 'Export python dependencies using uv'
+inputs:
+  python-version:
+    description: Input python version
+    required: true
+  uv-version:
+    description: Input uv version
+    required: true
+    default: "0.5.23"
+  aws-pypi-username:
+    description: Input aws username to access aws pypi bucket
+    required: true
+  aws-pypi-password:
+    description: Input aws password to access aws pypi bucket
+    required: true
+  groups:
+    description: Input --groups arguments for uv export
+    required: false
+  working-directory:
+    description: Input working directory
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Set up uv
+      uses: typless/actions/setup-uv@v4.0
+      with:
+        python-version: ${{ inputs.python-version }}
+        version: ${{ inputs.uv-version }}
+        working-directory: ${{ inputs.working-directory }}
+    - name: Create requirements.txt file with --extra-index-url
+      shell: bash
+      run: |
+        echo '--extra-index-url https://${{ inputs.aws-pypi-username }}:${{ inputs.aws-pypi-password }}@pypi.typless.com' > requirements.txt
+      working-directory: ${{ inputs.working-directory }}
+    - name: uv export with optional groups
+      if: inputs.groups != ''
+      shell: bash
+      run: |
+        uv export --no-hashes --format requirements-txt --no-default-groups ${{ inputs.groups }} >> requirements.txt
+      working-directory: ${{ inputs.working-directory }}
+    - name: uv export without optional groups
+      if: inputs.groups == ''
+      shell: bash
+      run: |
+        uv export --no-hashes --format requirements-txt >> requirements.txt
+      working-directory: ${{ inputs.working-directory }}

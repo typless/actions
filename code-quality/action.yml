@@ -40,7 +40,7 @@ runs:
       working-directory:  ${{ inputs.working-directory }}
       run: uv run ruff check
 
-    - name: Run safety scan
+    - name: Run pip audit
       shell: bash
       working-directory:  ${{ inputs.working-directory }}
-      run: uv run safety scan
+      run: uv run pip-audit

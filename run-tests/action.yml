@@ -39,4 +39,4 @@ runs:
     - name: Run tests
       shell: bash
       working-directory: ${{ inputs.working-directory }}
-      run: uv run pytest ${{ inputs.test-args }}
+      run: uv run --no-sync pytest ${{ inputs.test-args }}

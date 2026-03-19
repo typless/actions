@@ -1,0 +1,68 @@
+name: 'WAF IP Set'
+description: 'Add or revoke an IP address from an AWS WAF IP set'
+
+inputs:
+  action:
+    description: 'Action to perform: add or revoke'
+    required: true
+  ip:
+    description: 'IP address to add/revoke (without /32 suffix)'
+    required: true
+  ip-set-name:
+    description: 'WAF IP set name'
+    required: true
+  ip-set-id:
+    description: 'WAF IP set ID'
+    required: true
+  scope:
+    description: 'WAF scope: REGIONAL or CLOUDFRONT'
+    required: true
+  region:
+    description: 'AWS region for the WAF IP set'
+    required: true
+  max-retries:
+    description: 'Maximum number of retries on lock contention'
+    required: false
+    default: '10'
+
+runs:
+  using: composite
+  steps:
+    - name: ${{ inputs.action == 'add' && 'Add' || 'Revoke' }} IP in WAF IP set (${{ inputs.ip-set-name }})
+      shell: bash
+      run: |
+        RUNNER_IP="${{ inputs.ip }}/32"
+        ACTION="${{ inputs.action }}"
+        MAX_RETRIES="${{ inputs.max-retries }}"
+
+        for i in $(seq 1 "$MAX_RETRIES"); do
+          RESULT=$(aws wafv2 get-ip-set \
+            --name "${{ inputs.ip-set-name }}" \
+            --scope "${{ inputs.scope }}" \
+            --id "${{ inputs.ip-set-id }}" \
+            --region "${{ inputs.region }}")
+
+          LOCK_TOKEN=$(echo "$RESULT" | jq -r '.LockToken')
+          DESCRIPTION=$(echo "$RESULT" | jq -r '.IPSet.Description // ""')
+
+          if [ "$ACTION" = "add" ]; then
+            ADDRESSES=$(echo "$RESULT" | jq -r '[.IPSet.Addresses[], "'"$RUNNER_IP"'"] | unique')
+          elif [ "$ACTION" = "revoke" ]; then
+            ADDRESSES=$(echo "$RESULT" | jq -r '[.IPSet.Addresses[] | select(. != "'"$RUNNER_IP"'")]')
+          else
+            echo "::error::Invalid action '$ACTION'. Must be 'add' or 'revoke'."
+            exit 1
+          fi
+
+          aws wafv2 update-ip-set \
+            --name "${{ inputs.ip-set-name }}" \
+            --scope "${{ inputs.scope }}" \
+            --id "${{ inputs.ip-set-id }}" \
+            --addresses "$ADDRESSES" \
+            --lock-token "$LOCK_TOKEN" \
+            --description "$DESCRIPTION" \
+            --region "${{ inputs.region }}" && break
+
+          echo "::warning::Attempt $i failed, retrying..."
+          sleep $((RANDOM % 3 + 1))
+        done

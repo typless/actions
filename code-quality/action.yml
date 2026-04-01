@@ -40,7 +40,31 @@ runs:
       working-directory:  ${{ inputs.working-directory }}
       run: uv run --no-sync ruff check
 
-    - name: Run pip audit
+    - name: Check for trivyignore
+      id: trivyignore
       shell: bash
-      working-directory:  ${{ inputs.working-directory }}
-      run: uv run --no-sync pip-audit
+      run: |
+        if [ -f "${{ inputs.working-directory }}/.trivyignore" ]; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Dependency security scan (with ignores)
+      if: steps.trivyignore.outputs.exists == 'true'
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: fs
+        scan-ref: ${{ inputs.working-directory }}
+        scanners: vuln
+        exit-code: 1
+        ignore-unfixed: true
+        trivyignores: ${{ inputs.working-directory }}/.trivyignore
+
+    - name: Dependency security scan
+      if: steps.trivyignore.outputs.exists != 'true'
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: fs
+        scan-ref: ${{ inputs.working-directory }}
+        scanners: vuln
+        exit-code: 1
+        ignore-unfixed: true

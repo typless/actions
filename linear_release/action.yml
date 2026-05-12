@@ -1,0 +1,237 @@
+name: Sync Linear Release
+description: Sync a Linear release using GitHub's auto-generated release notes as the source.
+
+inputs:
+  linear-access-key:
+    description: Linear pipeline access key (used for the release sync mutation).
+    required: true
+  linear-api-key:
+    description: |
+      Linear personal API key. Required for:
+        - Filtering out issues already linked to another release (dedup).
+        - Moving referenced issues to a `completed` workflow state (`mark-done`).
+      The pipeline access key cannot perform these operations — it is scoped to
+      `*ByAccessKey` mutations only. If omitted, dedup and mark-done are skipped
+      with a warning.
+    required: false
+    default: ''
+  gh-token:
+    description: GitHub token used to call the GitHub API.
+    required: true
+  tag:
+    description: Linear release name and version (e.g. tapp-v1.2.3).
+    required: true
+  since-tag:
+    description: |
+      Anchor for note scope when HEAD is past `tag` but isn't itself a tag
+      (e.g. backend release/* push between UI tags). Leave empty for tag-push
+      runs where HEAD is the tag itself.
+    required: false
+    default: ''
+  commit:
+    description: Commit SHA recorded on the Linear release. Defaults to HEAD.
+    required: false
+    default: ''
+  mark-done:
+    description: Move referenced issues to the team's first `completed` state. Already-done and canceled issues are skipped. Requires `linear-api-key`.
+    required: false
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Sync release to Linear
+      shell: bash
+      env:
+        LINEAR_ACCESS_KEY: ${{ inputs.linear-access-key }}
+        LINEAR_API_KEY: ${{ inputs.linear-api-key }}
+        GH_TOKEN: ${{ inputs.gh-token }}
+        TAG: ${{ inputs.tag }}
+        SINCE_TAG: ${{ inputs.since-tag }}
+        COMMIT_INPUT: ${{ inputs.commit }}
+        MARK_DONE: ${{ inputs.mark-done }}
+      run: |
+        set -euo pipefail
+
+        [ -n "$TAG" ] || { echo "tag input required" >&2; exit 1; }
+        COMMIT="${COMMIT_INPUT:-$(git rev-parse HEAD)}"
+
+        gen_args=()
+        if [ -n "$SINCE_TAG" ]; then
+          gen_args+=(-f "tag_name=tmp-${COMMIT:0:7}")
+          gen_args+=(-f "previous_tag_name=$SINCE_TAG")
+          gen_args+=(-f "target_commitish=$COMMIT")
+        else
+          gen_args+=(-f "tag_name=$TAG")
+        fi
+
+        notes=$(gh api -X POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" "${gen_args[@]}" --jq '.body')
+
+        echo "=== GitHub release notes ==="
+        echo "$notes"
+        echo "==="
+
+        # Extract issue IDs (e.g. TYP-1234) from the release notes body. PR titles
+        # in the notes carry the identifier, so this avoids per-PR /pulls/{number}
+        # calls — those would need `pull-requests: read` on the caller's token and
+        # fail silently when the workflow only grants `contents: write`.
+        # We deliberately do NOT send pullRequestReferences: Linear's GitHub
+        # integration auto-links each PR's issues onto the synced release, which
+        # would re-tag already-released issues regardless of any issueReferences
+        # filter below. Issues alone are sufficient to define the release.
+        issues_tmp=$(mktemp)
+        trap 'rm -f "$issues_tmp" "$kept_issues_tmp"' EXIT
+        kept_issues_tmp=""
+        set +e
+        printf '%s\n' "$notes" | grep -oiE '\b[A-Za-z]+-[0-9]+\b' | tr '[:lower:]' '[:upper:]' >> "$issues_tmp"
+        set -e
+
+        if [ -s "$issues_tmp" ]; then
+          candidate_issues=$(sort -u "$issues_tmp" | jq -R . | jq -s .)
+        else
+          candidate_issues='[]'
+        fi
+
+        echo "Candidate issues from PRs: $(printf '%s' "$candidate_issues" | jq -c .)"
+
+        # Filter out issues that are already linked to a release in Linear.
+        # Each issue may only belong to one release; re-syncs are idempotent.
+        # The `issue(id)` query needs a personal API key — pipeline access keys
+        # are scoped to *ByAccessKey mutations and would silently return errors.
+        if [ -n "$LINEAR_API_KEY" ]; then
+          release_check_query='query Q($id: String!) { issue(id: $id) { id releases { nodes { id name } } } }'
+          kept_issues_tmp=$(mktemp)
+          for issue_id in $(printf '%s' "$candidate_issues" | jq -r '.[]'); do
+            info=$(curl -fsS -X POST https://api.linear.app/graphql \
+              -H "Authorization: $LINEAR_API_KEY" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg q "$release_check_query" --arg id "$issue_id" '{query:$q, variables:{id:$id}}')") \
+              || { echo "  $issue_id: release lookup HTTP error, keeping"; printf '%s\n' "$issue_id" >> "$kept_issues_tmp"; continue; }
+
+            if printf '%s' "$info" | jq -e '.errors' > /dev/null 2>&1; then
+              err=$(printf '%s' "$info" | jq -c '.errors')
+              echo "  $issue_id: Linear returned errors on release lookup: $err"
+              printf '%s\n' "$issue_id" >> "$kept_issues_tmp"
+              continue
+            fi
+
+            if ! printf '%s' "$info" | jq -e '.data.issue' > /dev/null 2>&1; then
+              echo "  $issue_id: not found in Linear, keeping"
+              printf '%s\n' "$issue_id" >> "$kept_issues_tmp"
+              continue
+            fi
+
+            existing_count=$(printf '%s' "$info" | jq -r '.data.issue.releases.nodes | length')
+            if [ "$existing_count" -gt 0 ]; then
+              existing_names=$(printf '%s' "$info" | jq -r '[.data.issue.releases.nodes[].name] | join(", ")')
+              echo "  $issue_id: already on release(s) [$existing_names], skipping"
+            else
+              printf '%s\n' "$issue_id" >> "$kept_issues_tmp"
+            fi
+          done
+
+          if [ -s "$kept_issues_tmp" ]; then
+            issues=$(sort -u "$kept_issues_tmp" | jq -R . | jq -s .)
+          else
+            issues='[]'
+          fi
+        else
+          echo "linear-api-key not set — skipping release dedup. Issues may end up on multiple releases."
+          issues="$candidate_issues"
+        fi
+
+        echo "Issues for sync: $(printf '%s' "$issues" | jq -c .)"
+
+        owner="${GITHUB_REPOSITORY%/*}"
+        repo="${GITHUB_REPOSITORY#*/}"
+
+        payload=$(jq -n \
+          --arg tag "$TAG" --arg sha "$COMMIT" --arg owner "$owner" --arg repo "$repo" \
+          --argjson issues "$issues" \
+          '{
+            query: "mutation Sync($input: ReleaseSyncInputBase!) { releaseSyncByAccessKey(input: $input) { success release { id name url version } } }",
+            variables: {
+              input: {
+                name: $tag,
+                version: $tag,
+                commitSha: $sha,
+                issueReferences: ($issues | map({identifier: ., commitSha: $sha})),
+                repository: { owner: $owner, name: $repo, provider: "github", url: ("https://github.com/" + $owner + "/" + $repo) }
+              }
+            }
+          }')
+
+        response=$(curl -fsS -X POST https://api.linear.app/graphql \
+          -H "Authorization: $LINEAR_ACCESS_KEY" \
+          -H "Content-Type: application/json" \
+          -d "$payload")
+
+        echo "=== Linear response ==="
+        printf '%s' "$response" | jq .
+
+        if printf '%s' "$response" | jq -e '.data.releaseSyncByAccessKey.success' > /dev/null 2>&1; then
+          echo "Linear release '$TAG' synced successfully"
+        else
+          echo "Linear sync failed" >&2
+          exit 1
+        fi
+
+        if [ "$MARK_DONE" != "true" ] || [ "$(printf '%s' "$issues" | jq 'length')" -eq 0 ]; then
+          exit 0
+        fi
+
+        if [ -z "$LINEAR_API_KEY" ]; then
+          echo "mark-done is enabled but linear-api-key is not set — skipping. Pipeline access keys cannot update issue state."
+          exit 0
+        fi
+
+        echo "=== Marking referenced issues as Done ==="
+        issue_query='query Q($id: String!) { issue(id: $id) { id identifier state { id type name } team { states(filter: { type: { eq: "completed" } }) { nodes { id name position } } } } }'
+        issue_mutation='mutation M($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success issue { identifier state { name } } } }'
+
+        for issue_id in $(printf '%s' "$issues" | jq -r '.[]'); do
+          info=$(curl -fsS -X POST https://api.linear.app/graphql \
+            -H "Authorization: $LINEAR_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg q "$issue_query" --arg id "$issue_id" '{query:$q, variables:{id:$id}}')") \
+            || { echo "  $issue_id: lookup HTTP error, skipping"; continue; }
+
+          if printf '%s' "$info" | jq -e '.errors' > /dev/null 2>&1; then
+            err=$(printf '%s' "$info" | jq -c '.errors')
+            echo "  $issue_id: Linear returned errors on lookup: $err, skipping"
+            continue
+          fi
+
+          cur_type=$(printf '%s' "$info" | jq -r '.data.issue.state.type // empty')
+          cur_name=$(printf '%s' "$info" | jq -r '.data.issue.state.name // empty')
+          if [ -z "$cur_type" ]; then
+            echo "  $issue_id: not found in Linear, skipping"
+            continue
+          fi
+          if [ "$cur_type" = "completed" ] || [ "$cur_type" = "canceled" ]; then
+            echo "  $issue_id: already '$cur_name' ($cur_type), skipping"
+            continue
+          fi
+
+          issue_uuid=$(printf '%s' "$info" | jq -r '.data.issue.id')
+          done_id=$(printf '%s' "$info" | jq -r '[.data.issue.team.states.nodes[]?] | sort_by(.position) | .[0].id // empty')
+          if [ -z "$done_id" ]; then
+            echo "  $issue_id: team has no completed-type state, skipping"
+            continue
+          fi
+
+          resp=$(curl -fsS -X POST https://api.linear.app/graphql \
+            -H "Authorization: $LINEAR_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg q "$issue_mutation" --arg id "$issue_uuid" --arg stateId "$done_id" '{query:$q, variables:{id:$id, stateId:$stateId}}')") \
+            || { echo "  $issue_id: update HTTP error, continuing"; continue; }
+
+          ok=$(printf '%s' "$resp" | jq -r '.data.issueUpdate.success // false')
+          new_name=$(printf '%s' "$resp" | jq -r '.data.issueUpdate.issue.state.name // "?"')
+          if [ "$ok" = "true" ]; then
+            echo "  $issue_id: '$cur_name' -> '$new_name'"
+          else
+            err=$(printf '%s' "$resp" | jq -c '.errors // .')
+            echo "  $issue_id: update reported failure: $err"
+          fi
+        done

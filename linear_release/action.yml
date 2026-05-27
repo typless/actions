@@ -32,6 +32,15 @@ inputs:
     description: Commit SHA recorded on the Linear release. Defaults to HEAD.
     required: false
     default: ''
+  service-path:
+    description: |
+      Restrict the release to issues whose PR changed files under this repo
+      path (e.g. services/user). When set, the action fetches each referenced
+      PR's changed files and drops the issues of PRs that did not touch the
+      path. Requires the caller to grant `pull-requests: read`. Leave empty to
+      include every issue in the notes range (legacy behavior).
+    required: false
+    default: ''
   mark-done:
     description: Move referenced issues to the team's first `completed` state. Already-done and canceled issues are skipped. Requires `linear-api-key`.
     required: false
@@ -50,11 +59,16 @@ runs:
         SINCE_TAG: ${{ inputs.since-tag }}
         COMMIT_INPUT: ${{ inputs.commit }}
         MARK_DONE: ${{ inputs.mark-done }}
+        SERVICE_PATH: ${{ inputs.service-path }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
 
         [ -n "$TAG" ] || { echo "tag input required" >&2; exit 1; }
         COMMIT="${COMMIT_INPUT:-$(git rev-parse HEAD)}"
+
+        # Pure path-matching helpers (normalize_service_path, any_path_under).
+        source "$ACTION_PATH/filter.sh"
 
         gen_args=()
         if [ -n "$SINCE_TAG" ]; then
@@ -82,9 +96,36 @@ runs:
         issues_tmp=$(mktemp)
         trap 'rm -f "$issues_tmp" "$kept_issues_tmp"' EXIT
         kept_issues_tmp=""
-        set +e
-        printf '%s\n' "$notes" | grep -oiE '\b[A-Za-z]+-[0-9]+\b' | tr '[:lower:]' '[:upper:]' >> "$issues_tmp"
-        set -e
+
+        if [ -n "$SERVICE_PATH" ]; then
+          # Path scoping: keep an issue only if the PR it came from changed a
+          # file under SERVICE_PATH. The notes list one merged PR per line with
+          # both a /pull/<n> link and the issue identifier(s) from its title, so
+          # we parse line-by-line and ask the API which files each PR touched.
+          # Reading PR files requires `pull-requests: read` on the caller token.
+          prefix="$(normalize_service_path "$SERVICE_PATH")"
+          echo "Scoping issues to PRs that changed files under: $prefix"
+          while IFS= read -r line; do
+            pr=$(printf '%s' "$line" | grep -oE '/pull/[0-9]+' | grep -oE '[0-9]+$' | head -n1 || true)
+            [ -n "$pr" ] || continue
+            line_issues=$(printf '%s\n' "$line" | grep -oiE '\b[A-Za-z]+-[0-9]+\b' | tr '[:lower:]' '[:upper:]' || true)
+            [ -n "$line_issues" ] || continue
+            files=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/$pr/files" --jq '.[].filename' || true)
+            if [ -z "$files" ]; then
+              echo "  WARNING: could not read files for PR #$pr (every PR changes files — is 'pull-requests: read' granted?); not scoping it in"
+              continue
+            fi
+            if printf '%s\n' "$files" | any_path_under "$prefix"; then
+              printf '%s\n' "$line_issues" >> "$issues_tmp"
+            else
+              echo "  Skipping PR #$pr — no changes under $prefix"
+            fi
+          done <<< "$notes"
+        else
+          set +e
+          printf '%s\n' "$notes" | grep -oiE '\b[A-Za-z]+-[0-9]+\b' | tr '[:lower:]' '[:upper:]' >> "$issues_tmp"
+          set -e
+        fi
 
         if [ -s "$issues_tmp" ]; then
           candidate_issues=$(sort -u "$issues_tmp" | jq -R . | jq -s .)

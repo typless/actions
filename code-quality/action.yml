@@ -22,7 +22,7 @@ runs:
   using: composite
   steps:
     - name: Install python dependencies
-      uses: typless/actions/install-python-dependencies@v4.0
+      uses: typless/actions/install-python-dependencies@v6.0
       with:
         python-version: ${{ inputs.python-version }}
         uv-version: ${{ inputs.uv-version }}

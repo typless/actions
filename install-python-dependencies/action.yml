@@ -22,7 +22,7 @@ runs:
   using: composite
   steps:
     - name: Setup uv
-      uses: typless/actions/setup-uv@v4.0
+      uses: typless/actions/setup-uv@v6.0
       with:
         python-version: ${{ inputs.python-version }}
         version: ${{ inputs.uv-version }}

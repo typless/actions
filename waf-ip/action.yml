@@ -1,68 +1,78 @@
-name: 'WAF IP Set'
-description: 'Add or revoke an IP address from an AWS WAF IP set'
+name: 'Manage WAF IP set entry'
+description: 'Add or remove the runner IP in a WAFv2 IP set, with optimistic-lock retry.'
+
+# Prerequisites in the calling job:
+#   - AWS credentials already configured (aws-actions/configure-aws-credentials)
+#     with a role allowed to wafv2:GetIPSet and wafv2:UpdateIPSet on the set.
+#   - jq and aws on PATH (true on ubuntu-latest).
 
 inputs:
-  action:
-    description: 'Action to perform: add or revoke'
+  operation:
+    description: 'add | remove'
     required: true
   ip:
-    description: 'IP address to add/revoke (without /32 suffix)'
+    description: 'IP address without CIDR suffix; /32 is appended automatically'
     required: true
   ip-set-name:
-    description: 'WAF IP set name'
+    description: 'WAF IP-set name'
     required: true
   ip-set-id:
-    description: 'WAF IP set ID'
+    description: 'WAF IP-set id'
     required: true
   scope:
-    description: 'WAF scope: REGIONAL or CLOUDFRONT'
+    description: 'REGIONAL | CLOUDFRONT'
     required: true
   region:
-    description: 'AWS region for the WAF IP set'
+    description: 'AWS region (REGIONAL: the ALB region e.g. eu-west-1; CLOUDFRONT: must be us-east-1)'
     required: true
   max-retries:
-    description: 'Maximum number of retries on lock contention'
+    description: 'Max optimistic-lock retries'
     required: false
     default: '10'
+  fail-on-exhaustion:
+    description: "exit 1 if all retries fail; set 'false' for best-effort cleanup"
+    required: false
+    default: 'true'
 
 runs:
   using: composite
   steps:
-    - name: ${{ inputs.action == 'add' && 'Add' || 'Revoke' }} IP in WAF IP set (${{ inputs.ip-set-name }})
+    - name: ${{ inputs.operation }} IP in WAF IP set (${{ inputs.ip-set-name }})
       shell: bash
+      env:
+        OPERATION: ${{ inputs.operation }}
+        IP: ${{ inputs.ip }}
+        NAME: ${{ inputs.ip-set-name }}
+        ID: ${{ inputs.ip-set-id }}
+        SCOPE: ${{ inputs.scope }}
+        REGION: ${{ inputs.region }}
+        MAX_RETRIES: ${{ inputs.max-retries }}
+        FAIL_ON_EXHAUSTION: ${{ inputs.fail-on-exhaustion }}
       run: |
-        RUNNER_IP="${{ inputs.ip }}/32"
-        ACTION="${{ inputs.action }}"
-        MAX_RETRIES="${{ inputs.max-retries }}"
+        set -euo pipefail
+        RUNNER_IP="${IP}/32"
+        case "$OPERATION" in
+          add)    JQ_ADDR='[.IPSet.Addresses[], "'"$RUNNER_IP"'"] | unique' ;;
+          remove) JQ_ADDR='[.IPSet.Addresses[] | select(. != "'"$RUNNER_IP"'")]' ;;
+          *) echo "::error::operation must be add or remove (got '$OPERATION')"; exit 1 ;;
+        esac
 
         for i in $(seq 1 "$MAX_RETRIES"); do
-          RESULT=$(aws wafv2 get-ip-set \
-            --name "${{ inputs.ip-set-name }}" \
-            --scope "${{ inputs.scope }}" \
-            --id "${{ inputs.ip-set-id }}" \
-            --region "${{ inputs.region }}")
-
-          LOCK_TOKEN=$(echo "$RESULT" | jq -r '.LockToken')
+          RESULT=$(aws wafv2 get-ip-set --name "$NAME" --scope "$SCOPE" --id "$ID" --region "$REGION")
+          LOCK_TOKEN=$(echo "$RESULT"  | jq -r '.LockToken')
           DESCRIPTION=$(echo "$RESULT" | jq -r '.IPSet.Description // ""')
-
-          if [ "$ACTION" = "add" ]; then
-            ADDRESSES=$(echo "$RESULT" | jq -r '[.IPSet.Addresses[], "'"$RUNNER_IP"'"] | unique')
-          elif [ "$ACTION" = "revoke" ]; then
-            ADDRESSES=$(echo "$RESULT" | jq -r '[.IPSet.Addresses[] | select(. != "'"$RUNNER_IP"'")]')
-          else
-            echo "::error::Invalid action '$ACTION'. Must be 'add' or 'revoke'."
-            exit 1
+          ADDRESSES=$(echo "$RESULT"   | jq -r "$JQ_ADDR")
+          if aws wafv2 update-ip-set --name "$NAME" --scope "$SCOPE" --id "$ID" \
+               --addresses "$ADDRESSES" --lock-token "$LOCK_TOKEN" --description "$DESCRIPTION" --region "$REGION"; then
+            echo "WAF $OPERATION succeeded for $RUNNER_IP in $NAME (attempt $i)"
+            exit 0
           fi
-
-          aws wafv2 update-ip-set \
-            --name "${{ inputs.ip-set-name }}" \
-            --scope "${{ inputs.scope }}" \
-            --id "${{ inputs.ip-set-id }}" \
-            --addresses "$ADDRESSES" \
-            --lock-token "$LOCK_TOKEN" \
-            --description "$DESCRIPTION" \
-            --region "${{ inputs.region }}" && break
-
-          echo "::warning::Attempt $i failed, retrying..."
+          echo "Attempt $i/$MAX_RETRIES failed (likely optimistic-lock contention); retrying..."
           sleep $((RANDOM % 3 + 1))
         done
+
+        if [ "$FAIL_ON_EXHAUSTION" = "true" ]; then
+          echo "::error::WAF $OPERATION for $RUNNER_IP in $NAME failed after $MAX_RETRIES attempts"
+          exit 1
+        fi
+        echo "::warning::WAF $OPERATION for $RUNNER_IP in $NAME failed after $MAX_RETRIES attempts (best-effort, continuing)"

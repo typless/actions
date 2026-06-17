@@ -1,0 +1,47 @@
+name: 'Wait for URL to stop being blocked'
+description: 'Poll a URL until it returns a non-blocked HTTP status (e.g. after WAF propagation).'
+
+inputs:
+  url:
+    description: 'URL to poll'
+    required: true
+  blocked-codes:
+    description: "Space-separated HTTP codes treated as 'still blocked'"
+    required: false
+    default: '403 000'
+  timeout-seconds:
+    description: 'Total time to wait before failing'
+    required: false
+    default: '300'
+  interval-seconds:
+    description: 'Delay between polls'
+    required: false
+    default: '5'
+
+runs:
+  using: composite
+  steps:
+    - name: Wait for ${{ inputs.url }}
+      shell: bash
+      env:
+        URL: ${{ inputs.url }}
+        BLOCKED: ${{ inputs.blocked-codes }}
+        TIMEOUT: ${{ inputs.timeout-seconds }}
+        INTERVAL: ${{ inputs.interval-seconds }}
+      run: |
+        set -euo pipefail
+        echo "Polling $URL until it stops returning [$BLOCKED]..."
+        ATTEMPTS=$(( TIMEOUT / INTERVAL ))
+        [ "$ATTEMPTS" -lt 1 ] && ATTEMPTS=1
+        CODE=000
+        for i in $(seq 1 "$ATTEMPTS"); do
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$URL" || echo "000")
+          if ! echo " $BLOCKED " | grep -q " $CODE "; then
+            echo "Reachable (HTTP $CODE) after ~$((i*INTERVAL))s."
+            exit 0
+          fi
+          echo "Attempt $i: HTTP $CODE — still blocked, waiting ${INTERVAL}s..."
+          sleep "$INTERVAL"
+        done
+        echo "::error::$URL did not become reachable within ${TIMEOUT}s (last HTTP $CODE)"
+        exit 1

@@ -1,5 +1,8 @@
 name: Sync Linear Release
-description: Sync a Linear release using GitHub's auto-generated release notes as the source.
+description: |
+  Sync a Linear release using the commit messages in the release's git range
+  as the source. Requires the caller to check out full history first
+  (actions/checkout with `fetch-depth: 0`).
 
 inputs:
   linear-access-key:
@@ -16,16 +19,20 @@ inputs:
     required: false
     default: ''
   gh-token:
-    description: GitHub token used to call the GitHub API.
+    description: GitHub token. Only used to discover the previous release tag (via the generate-notes API) when `since-tag` is empty.
     required: true
   tag:
     description: Linear release name and version (e.g. tapp-v1.2.3).
     required: true
   since-tag:
     description: |
-      Anchor for note scope when HEAD is past `tag` but isn't itself a tag
-      (e.g. backend release/* push between UI tags). Leave empty for tag-push
-      runs where HEAD is the tag itself.
+      Base of the commit range whose messages are scanned for issue IDs.
+      Three modes:
+        - Empty (tag-push runs where HEAD is the tag itself): the previous
+          tag is auto-discovered the same way GitHub release notes would.
+        - Equal to `tag` (anchor mode, e.g. backend release/* push between
+          tags): scans commits since that existing tag up to `commit`.
+        - Different from `tag`: explicit base for the range.
     required: false
     default: ''
   commit:
@@ -34,11 +41,13 @@ inputs:
     default: ''
   service-path:
     description: |
-      Restrict the release to issues whose PR changed files under this repo
-      path (e.g. services/user). When set, the action fetches each referenced
-      PR's changed files and drops the issues of PRs that did not touch the
-      path. Requires the caller to grant `pull-requests: read`. Leave empty to
-      include every issue in the notes range (legacy behavior).
+      Restrict the release to issues referenced by commits that changed files
+      under this repo path (e.g. services/user), applied as a git pathspec per
+      commit. No extra permissions needed (`pull-requests: read` is no longer
+      required). Note: when set, merge commits are excluded by pathspec
+      filtering, so tickets that appear only in a merge commit's message (or
+      only in a PR title) are not seen. Leave empty to include every issue
+      referenced in the range.
     required: false
     default: ''
   mark-done:
@@ -65,75 +74,91 @@ runs:
         set -euo pipefail
 
         [ -n "$TAG" ] || { echo "tag input required" >&2; exit 1; }
-        COMMIT="${COMMIT_INPUT:-$(git rev-parse HEAD)}"
 
-        # Pure path-matching helpers (normalize_service_path, any_path_under).
-        source "$ACTION_PATH/filter.sh"
-
-        gen_args=()
-        if [ -n "$SINCE_TAG" ]; then
-          gen_args+=(-f "tag_name=tmp-${COMMIT:0:7}")
-          gen_args+=(-f "previous_tag_name=$SINCE_TAG")
-          gen_args+=(-f "target_commitish=$COMMIT")
-        else
-          gen_args+=(-f "tag_name=$TAG")
+        if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+          echo "ERROR: shallow clone. This action reads commit history from the local checkout;" >&2
+          echo "use actions/checkout with 'fetch-depth: 0' before running it." >&2
+          exit 1
         fi
 
-        notes=$(gh api -X POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" "${gen_args[@]}" --jq '.body')
+        COMMIT="${COMMIT_INPUT:-$(git rev-parse HEAD)}"
+        git rev-parse -q --verify "$COMMIT^{commit}" >/dev/null \
+          || { echo "ERROR: commit '$COMMIT' not found in local history" >&2; exit 1; }
 
-        echo "=== GitHub release notes ==="
-        echo "$notes"
+        # Pure helpers (normalize_service_path, extract_issue_ids).
+        source "$ACTION_PATH/filter.sh"
+
+        if [ -n "$SINCE_TAG" ]; then
+          # Caller supplies the base explicitly. tag == since-tag is valid and
+          # means "commits since that existing release tag up to COMMIT".
+          BASE="$SINCE_TAG"
+        else
+          # Tag-push run with no anchor: discover the previous tag the same way
+          # GitHub's release notes would. Deliberately NOT `git describe` /
+          # nearest-reachable-tag: these are monorepos with several tag families
+          # (tapp-v*, exporter-v*, per-service tags), so the nearest tag by
+          # history is often from the wrong series. The generate-notes body
+          # always ends with
+          #   **Full Changelog**: https://github.com/O/R/compare/PREV...TAG
+          # or .../commits/TAG when there is no previous tag.
+          body=$(gh api -X POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f "tag_name=$TAG" --jq '.body')
+          changelog=$(printf '%s\n' "$body" | grep '^\*\*Full Changelog\*\*:' | tail -n1 || true)
+          BASE=$(printf '%s\n' "$changelog" | sed -nE 's|.*/compare/(.+)\.\.\..*|\1|p')
+          if [ -z "$BASE" ] && ! printf '%s\n' "$changelog" | grep -q '/commits/'; then
+            echo "ERROR: could not determine previous tag from generate-notes output:" >&2
+            printf '%s\n' "$changelog" >&2
+            exit 1
+          fi
+          # Empty BASE here means first release: scan everything reachable from COMMIT.
+        fi
+
+        if [ -n "$BASE" ]; then
+          git rev-parse -q --verify "$BASE^{commit}" >/dev/null || {
+            echo "ERROR: base ref '$BASE' not found locally. Ensure actions/checkout ran with 'fetch-depth: 0' (which also fetches tags)." >&2
+            exit 1
+          }
+          range="$BASE..$COMMIT"
+        else
+          range="$COMMIT"
+        fi
+
+        log_args=("$range")
+        if [ -n "$SERVICE_PATH" ]; then
+          # Pathspec scoping: a commit is in scope only if it changed files
+          # under SERVICE_PATH. Pathspec matching is component-wise, so
+          # services/user never matches services/user2. Merge commits are
+          # naturally excluded (they have no pathspec diff without -m). No API
+          # calls and no `pull-requests: read` needed.
+          pathspec="$(normalize_service_path "$SERVICE_PATH")"
+          log_args+=(-- "$pathspec")
+          echo "Scoping to commits that changed files under: $pathspec"
+        fi
+
+        echo "=== Commits in range $range ==="
+        git log --oneline "${log_args[@]}"
         echo "==="
 
-        # Extract issue IDs (e.g. TYP-1234) from the release notes body. PR titles
-        # in the notes carry the identifier, so this avoids per-PR /pulls/{number}
-        # calls — those would need `pull-requests: read` on the caller's token and
-        # fail silently when the workflow only grants `contents: write`.
+        # Extract issue IDs (e.g. TYP-1234) from the full message (subject +
+        # body) of each commit in the range. PRs are rebase-merged, so the
+        # individual commits — not PR titles — carry the identifiers
+        # (convention: category[svc1,svc2] TYP-1234 TYP-1235 message). Without
+        # service-path, merge-commit messages are scanned too; branch slugs
+        # like janbatic/typ-2663-... yielding TYP-2663 is intended.
         # We deliberately do NOT send pullRequestReferences: Linear's GitHub
         # integration auto-links each PR's issues onto the synced release, which
         # would re-tag already-released issues regardless of any issueReferences
         # filter below. Issues alone are sufficient to define the release.
-        issues_tmp=$(mktemp)
-        trap 'rm -f "$issues_tmp" "$kept_issues_tmp"' EXIT
-        kept_issues_tmp=""
-
-        if [ -n "$SERVICE_PATH" ]; then
-          # Path scoping: keep an issue only if the PR it came from changed a
-          # file under SERVICE_PATH. The notes list one merged PR per line with
-          # both a /pull/<n> link and the issue identifier(s) from its title, so
-          # we parse line-by-line and ask the API which files each PR touched.
-          # Reading PR files requires `pull-requests: read` on the caller token.
-          prefix="$(normalize_service_path "$SERVICE_PATH")"
-          echo "Scoping issues to PRs that changed files under: $prefix"
-          while IFS= read -r line; do
-            pr=$(printf '%s' "$line" | grep -oE '/pull/[0-9]+' | grep -oE '[0-9]+$' | head -n1 || true)
-            [ -n "$pr" ] || continue
-            line_issues=$(printf '%s\n' "$line" | grep -oiE '\b[A-Za-z]+-[0-9]+\b' | tr '[:lower:]' '[:upper:]' || true)
-            [ -n "$line_issues" ] || continue
-            files=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/$pr/files" --jq '.[].filename' || true)
-            if [ -z "$files" ]; then
-              echo "  WARNING: could not read files for PR #$pr (every PR changes files — is 'pull-requests: read' granted?); not scoping it in"
-              continue
-            fi
-            if printf '%s\n' "$files" | any_path_under "$prefix"; then
-              printf '%s\n' "$line_issues" >> "$issues_tmp"
-            else
-              echo "  Skipping PR #$pr — no changes under $prefix"
-            fi
-          done <<< "$notes"
-        else
-          set +e
-          printf '%s\n' "$notes" | grep -oiE '\b[A-Za-z]+-[0-9]+\b' | tr '[:lower:]' '[:upper:]' >> "$issues_tmp"
-          set -e
-        fi
-
-        if [ -s "$issues_tmp" ]; then
-          candidate_issues=$(sort -u "$issues_tmp" | jq -R . | jq -s .)
+        ids=$(git log --format=%B "${log_args[@]}" | extract_issue_ids)
+        if [ -n "$ids" ]; then
+          candidate_issues=$(printf '%s\n' "$ids" | jq -R . | jq -s .)
         else
           candidate_issues='[]'
         fi
 
-        echo "Candidate issues from PRs: $(printf '%s' "$candidate_issues" | jq -c .)"
+        kept_issues_tmp=""
+        trap 'rm -f "$kept_issues_tmp"' EXIT
+
+        echo "Candidate issues from commits: $(printf '%s' "$candidate_issues" | jq -c .)"
 
         # Filter out issues that are already linked to a release in Linear.
         # Each issue may only belong to one release; re-syncs are idempotent.

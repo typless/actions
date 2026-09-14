@@ -1,28 +1,46 @@
-name: Sync Linear Release
+name: Linear Release
 description: |
-  Sync a Linear release using the commit messages in the release's git range
-  as the source. Requires the caller to check out full history first
+  Link the issues referenced by commit messages in a git range to a Linear
+  release. Two modes, selected by `release-prefix`:
+    - `release-prefix` empty (sync mode): create/sync a Linear release named
+      after `tag` via `releaseSyncByAccessKey` (needs `linear-access-key`).
+    - `release-prefix` set (attach mode): find the most recently created
+      hand-made release whose name starts with the prefix and whose stage type
+      is `started` ("In progress"), and link the issues to it (needs
+      `linear-api-key`). Fails when no such release exists.
+  Requires the caller to check out full history first
   (actions/checkout with `fetch-depth: 0`).
 
 inputs:
   linear-access-key:
-    description: Linear pipeline access key (used for the release sync mutation).
-    required: true
+    description: Linear pipeline access key. Required in sync mode (`release-prefix` empty) for the release sync mutation; unused in attach mode.
+    required: false
+    default: ''
   linear-api-key:
     description: |
-      Linear personal API key. Required for:
+      Linear personal API key. Required in attach mode (`release-prefix` set):
+      finds the target release and links issues (`issueToReleaseCreate`).
+      Optional in sync mode, where it enables:
         - Filtering out issues already linked to another release (dedup).
         - Moving referenced issues to a `completed` workflow state (`mark-done`).
       The pipeline access key cannot perform these operations — it is scoped to
-      `*ByAccessKey` mutations only. If omitted, dedup and mark-done are skipped
-      with a warning.
+      `*ByAccessKey` mutations only. If omitted in sync mode, dedup and
+      mark-done are skipped with a warning.
+    required: false
+    default: ''
+  release-prefix:
+    description: |
+      Case-insensitive prefix of a hand-created Linear release name (e.g.
+      `tapp`, `cor`). When set, the action attaches issues to the most recently
+      created release whose name starts with this prefix and whose stage type
+      is `started`, instead of creating a release named after `tag`.
     required: false
     default: ''
   gh-token:
     description: GitHub token. Only used to discover the previous release tag (via the generate-notes API) when `since-tag` is empty.
     required: true
   tag:
-    description: Linear release name and version (e.g. tapp-v1.2.3).
+    description: Git tag of this release (e.g. tapp-v1.2.3). Used to compute the commit range and, in sync mode, as the Linear release name and version.
     required: true
   since-tag:
     description: |
@@ -51,18 +69,19 @@ inputs:
     required: false
     default: ''
   mark-done:
-    description: Move referenced issues to the team's first `completed` state. Already-done and canceled issues are skipped. Requires `linear-api-key`.
+    description: Move linked issues to the team's first `completed` state. Already-done and canceled issues are skipped. Requires `linear-api-key`.
     required: false
     default: 'true'
 
 runs:
   using: composite
   steps:
-    - name: Sync release to Linear
+    - name: Link issues to Linear release
       shell: bash
       env:
         LINEAR_ACCESS_KEY: ${{ inputs.linear-access-key }}
         LINEAR_API_KEY: ${{ inputs.linear-api-key }}
+        RELEASE_PREFIX: ${{ inputs.release-prefix }}
         GH_TOKEN: ${{ inputs.gh-token }}
         TAG: ${{ inputs.tag }}
         SINCE_TAG: ${{ inputs.since-tag }}
@@ -75,6 +94,16 @@ runs:
 
         [ -n "$TAG" ] || { echo "tag input required" >&2; exit 1; }
 
+        # Mode is selected by release-prefix. `tag` is needed in both modes
+        # (commit range), so it cannot be the switch.
+        if [ -n "$RELEASE_PREFIX" ]; then
+          MODE=attach
+          [ -n "$LINEAR_API_KEY" ] || { echo "linear-api-key input required when release-prefix is set" >&2; exit 1; }
+        else
+          MODE=sync
+          [ -n "$LINEAR_ACCESS_KEY" ] || { echo "linear-access-key input required when release-prefix is empty" >&2; exit 1; }
+        fi
+
         if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
           echo "ERROR: shallow clone. This action reads commit history from the local checkout;" >&2
           echo "use actions/checkout with 'fetch-depth: 0' before running it." >&2
@@ -85,8 +114,37 @@ runs:
         git rev-parse -q --verify "$COMMIT^{commit}" >/dev/null \
           || { echo "ERROR: commit '$COMMIT' not found in local history" >&2; exit 1; }
 
-        # Pure helpers (normalize_service_path, extract_issue_ids).
+        # Pure helpers (normalize_service_path, extract_issue_ids,
+        # pick_started_release, issue_release_status).
         source "$ACTION_PATH/filter.sh"
+
+        release_id=""
+        release_name=""
+        if [ "$MODE" = attach ]; then
+          # Resolve the target release before touching git so a missing release
+          # is the first thing in the log. Releases are hand-created in Linear;
+          # we take the newest one (by createdAt) whose name starts with the
+          # prefix and whose stage type is `started` ("In progress" in the UI).
+          # Archived releases are excluded by default.
+          echo "=== Looking up in-progress Linear release with name prefix '$RELEASE_PREFIX' ==="
+          releases_query='query Q($prefix: String!) { releases(filter: { name: { startsWithIgnoreCase: $prefix }, stage: { type: { eq: started } } }, first: 50) { nodes { id name url createdAt } } }'
+          releases_resp=$(curl -fsS -X POST https://api.linear.app/graphql \
+            -H "Authorization: $LINEAR_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg q "$releases_query" --arg prefix "$RELEASE_PREFIX" '{query:$q, variables:{prefix:$prefix}}')")
+          if printf '%s' "$releases_resp" | jq -e '.errors' > /dev/null 2>&1; then
+            echo "ERROR: Linear returned errors on release lookup:" >&2
+            printf '%s' "$releases_resp" | jq -c '.errors' >&2
+            exit 1
+          fi
+          release=$(printf '%s' "$releases_resp" | pick_started_release) || {
+            echo "ERROR: no in-progress Linear release with name prefix '$RELEASE_PREFIX'. Create one in Linear (stage: In progress) and re-run." >&2
+            exit 1
+          }
+          release_id=$(printf '%s' "$release" | jq -r '.id')
+          release_name=$(printf '%s' "$release" | jq -r '.name')
+          echo "Target release: $release_name ($(printf '%s' "$release" | jq -r '.url'))"
+        fi
 
         if [ -n "$SINCE_TAG" ]; then
           # Caller supplies the base explicitly. tag == since-tag is valid and
@@ -144,10 +202,10 @@ runs:
         # (convention: category[svc1,svc2] TYP-1234 TYP-1235 message). Without
         # service-path, merge-commit messages are scanned too; branch slugs
         # like janbatic/typ-2663-... yielding TYP-2663 is intended.
-        # We deliberately do NOT send pullRequestReferences: Linear's GitHub
-        # integration auto-links each PR's issues onto the synced release, which
-        # would re-tag already-released issues regardless of any issueReferences
-        # filter below. Issues alone are sufficient to define the release.
+        # In sync mode we deliberately do NOT send pullRequestReferences:
+        # Linear's GitHub integration auto-links each PR's issues onto the
+        # synced release, which would re-tag already-released issues regardless
+        # of any issueReferences filter below. Issues alone are sufficient.
         ids=$(git log --format=%B "${log_args[@]}" | extract_issue_ids)
         if [ -n "$ids" ]; then
           candidate_issues=$(printf '%s\n' "$ids" | jq -R . | jq -s .)
@@ -155,91 +213,138 @@ runs:
           candidate_issues='[]'
         fi
 
-        kept_issues_tmp=""
-        trap 'rm -f "$kept_issues_tmp"' EXIT
+        # Issues that end up on the release this run: in sync mode the ones
+        # sent in the sync payload, in attach mode the ones linked (or already
+        # on the target release). Also the input for mark-done.
+        issues_tmp=$(mktemp)
+        trap 'rm -f "$issues_tmp"' EXIT
 
         echo "Candidate issues from commits: $(printf '%s' "$candidate_issues" | jq -c .)"
 
-        # Filter out issues that are already linked to a release in Linear.
-        # Each issue may only belong to one release; re-syncs are idempotent.
+        # When an issue's release membership cannot be determined: sync mode
+        # keeps it (the sync mutation tolerates unknown issues, as before);
+        # attach mode skips it (issueToReleaseCreate would fail anyway).
+        keep_or_skip() {
+          if [ "$MODE" = sync ]; then
+            echo "  $1: $2, keeping"
+            printf '%s\n' "$1" >> "$issues_tmp"
+          else
+            echo "  $1: $2, skipping"
+          fi
+        }
+
+        # Each issue may only belong to one release, so issues already on
+        # another release are skipped in both modes; re-runs are idempotent.
         # The `issue(id)` query needs a personal API key — pipeline access keys
         # are scoped to *ByAccessKey mutations and would silently return errors.
         if [ -n "$LINEAR_API_KEY" ]; then
+          if [ "$MODE" = attach ]; then
+            echo "=== Linking issues to release '$release_name' ==="
+          else
+            echo "=== Checking issues against existing releases ==="
+          fi
           release_check_query='query Q($id: String!) { issue(id: $id) { id releases { nodes { id name } } } }'
-          kept_issues_tmp=$(mktemp)
+          link_mutation='mutation M($issueId: String!, $releaseId: String!) { issueToReleaseCreate(input: { issueId: $issueId, releaseId: $releaseId }) { success } }'
           for issue_id in $(printf '%s' "$candidate_issues" | jq -r '.[]'); do
             info=$(curl -fsS -X POST https://api.linear.app/graphql \
               -H "Authorization: $LINEAR_API_KEY" \
               -H "Content-Type: application/json" \
               -d "$(jq -n --arg q "$release_check_query" --arg id "$issue_id" '{query:$q, variables:{id:$id}}')") \
-              || { echo "  $issue_id: release lookup HTTP error, keeping"; printf '%s\n' "$issue_id" >> "$kept_issues_tmp"; continue; }
+              || { keep_or_skip "$issue_id" "release lookup HTTP error"; continue; }
 
             if printf '%s' "$info" | jq -e '.errors' > /dev/null 2>&1; then
-              err=$(printf '%s' "$info" | jq -c '.errors')
-              echo "  $issue_id: Linear returned errors on release lookup: $err"
-              printf '%s\n' "$issue_id" >> "$kept_issues_tmp"
+              keep_or_skip "$issue_id" "Linear returned errors on release lookup: $(printf '%s' "$info" | jq -c '.errors')"
               continue
             fi
 
             if ! printf '%s' "$info" | jq -e '.data.issue' > /dev/null 2>&1; then
-              echo "  $issue_id: not found in Linear, keeping"
-              printf '%s\n' "$issue_id" >> "$kept_issues_tmp"
+              keep_or_skip "$issue_id" "not found in Linear"
               continue
             fi
 
-            existing_count=$(printf '%s' "$info" | jq -r '.data.issue.releases.nodes | length')
-            if [ "$existing_count" -gt 0 ]; then
-              existing_names=$(printf '%s' "$info" | jq -r '[.data.issue.releases.nodes[].name] | join(", ")')
-              echo "  $issue_id: already on release(s) [$existing_names], skipping"
+            # In sync mode release_id is empty, so "target" can never match.
+            status=$(printf '%s' "$info" | issue_release_status "$release_id")
+            case "$status" in
+              target)
+                echo "  $issue_id: already on this release"
+                printf '%s\n' "$issue_id" >> "$issues_tmp"
+                continue
+                ;;
+              other\ *)
+                echo "  $issue_id: already on release(s) [${status#other }], skipping"
+                continue
+                ;;
+            esac
+
+            if [ "$MODE" = sync ]; then
+              printf '%s\n' "$issue_id" >> "$issues_tmp"
+              continue
+            fi
+
+            resp=$(curl -fsS -X POST https://api.linear.app/graphql \
+              -H "Authorization: $LINEAR_API_KEY" \
+              -H "Content-Type: application/json" \
+              -d "$(jq -n --arg q "$link_mutation" --arg issueId "$issue_id" --arg releaseId "$release_id" '{query:$q, variables:{issueId:$issueId, releaseId:$releaseId}}')") \
+              || { echo "  $issue_id: link HTTP error, continuing"; continue; }
+
+            if [ "$(printf '%s' "$resp" | jq -r '.data.issueToReleaseCreate.success // false')" = "true" ]; then
+              echo "  $issue_id: linked"
+              printf '%s\n' "$issue_id" >> "$issues_tmp"
             else
-              printf '%s\n' "$issue_id" >> "$kept_issues_tmp"
+              err=$(printf '%s' "$resp" | jq -c '.errors // .')
+              echo "  $issue_id: link reported failure: $err"
             fi
           done
 
-          if [ -s "$kept_issues_tmp" ]; then
-            issues=$(sort -u "$kept_issues_tmp" | jq -R . | jq -s .)
+          if [ -s "$issues_tmp" ]; then
+            issues=$(sort -u "$issues_tmp" | jq -R . | jq -s .)
           else
             issues='[]'
           fi
         else
+          # Only reachable in sync mode (attach mode requires the API key).
           echo "linear-api-key not set — skipping release dedup. Issues may end up on multiple releases."
           issues="$candidate_issues"
         fi
 
-        echo "Issues for sync: $(printf '%s' "$issues" | jq -c .)"
+        if [ "$MODE" = sync ]; then
+          echo "Issues for sync: $(printf '%s' "$issues" | jq -c .)"
 
-        owner="${GITHUB_REPOSITORY%/*}"
-        repo="${GITHUB_REPOSITORY#*/}"
+          owner="${GITHUB_REPOSITORY%/*}"
+          repo="${GITHUB_REPOSITORY#*/}"
 
-        payload=$(jq -n \
-          --arg tag "$TAG" --arg sha "$COMMIT" --arg owner "$owner" --arg repo "$repo" \
-          --argjson issues "$issues" \
-          '{
-            query: "mutation Sync($input: ReleaseSyncInputBase!) { releaseSyncByAccessKey(input: $input) { success release { id name url version } } }",
-            variables: {
-              input: {
-                name: $tag,
-                version: $tag,
-                commitSha: $sha,
-                issueReferences: ($issues | map({identifier: ., commitSha: $sha})),
-                repository: { owner: $owner, name: $repo, provider: "github", url: ("https://github.com/" + $owner + "/" + $repo) }
+          payload=$(jq -n \
+            --arg tag "$TAG" --arg sha "$COMMIT" --arg owner "$owner" --arg repo "$repo" \
+            --argjson issues "$issues" \
+            '{
+              query: "mutation Sync($input: ReleaseSyncInputBase!) { releaseSyncByAccessKey(input: $input) { success release { id name url version } } }",
+              variables: {
+                input: {
+                  name: $tag,
+                  version: $tag,
+                  commitSha: $sha,
+                  issueReferences: ($issues | map({identifier: ., commitSha: $sha})),
+                  repository: { owner: $owner, name: $repo, provider: "github", url: ("https://github.com/" + $owner + "/" + $repo) }
+                }
               }
-            }
-          }')
+            }')
 
-        response=$(curl -fsS -X POST https://api.linear.app/graphql \
-          -H "Authorization: $LINEAR_ACCESS_KEY" \
-          -H "Content-Type: application/json" \
-          -d "$payload")
+          response=$(curl -fsS -X POST https://api.linear.app/graphql \
+            -H "Authorization: $LINEAR_ACCESS_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$payload")
 
-        echo "=== Linear response ==="
-        printf '%s' "$response" | jq .
+          echo "=== Linear response ==="
+          printf '%s' "$response" | jq .
 
-        if printf '%s' "$response" | jq -e '.data.releaseSyncByAccessKey.success' > /dev/null 2>&1; then
-          echo "Linear release '$TAG' synced successfully"
+          if printf '%s' "$response" | jq -e '.data.releaseSyncByAccessKey.success' > /dev/null 2>&1; then
+            echo "Linear release '$TAG' synced successfully"
+          else
+            echo "Linear sync failed" >&2
+            exit 1
+          fi
         else
-          echo "Linear sync failed" >&2
-          exit 1
+          echo "Issues on release '$release_name' from this run: $(printf '%s' "$issues" | jq -c .)"
         fi
 
         if [ "$MARK_DONE" != "true" ] || [ "$(printf '%s' "$issues" | jq 'length')" -eq 0 ]; then

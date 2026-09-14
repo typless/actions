@@ -41,3 +41,26 @@ extract_issue_ids() {
     done
   done | sort -u
 }
+
+# pick_started_release: read a Linear `releases` query response from stdin and
+# print the most recently created release as compact JSON {id, name, url}.
+# The caller is expected to have already filtered by name prefix and
+# stage type "started" in the query; ordering is done here (by createdAt)
+# rather than trusting the API's pagination direction.
+pick_started_release() {
+  jq -ce '.data.releases.nodes | sort_by(.createdAt) | last | select(. != null) | {id, name, url}'
+}
+
+# issue_release_status TARGET_RELEASE_ID: read a Linear `issue` query response
+# (with `releases { nodes { id name } }`) from stdin and print one word
+# describing the issue's membership relative to the target release:
+#   target          already on the target release (re-run: nothing to do)
+#   other <names>   on one or more other releases (comma-joined names)
+#   none            not on any release
+issue_release_status() {
+  jq -r --arg target "$1" '
+    .data.issue.releases.nodes as $r
+    | if any($r[]; .id == $target) then "target"
+      elif ($r | length) > 0 then "other " + ([$r[].name] | join(", "))
+      else "none" end'
+}

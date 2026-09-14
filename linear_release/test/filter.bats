@@ -99,3 +99,37 @@ setup() {
   run extract_issue_ids <<< "final touches for TYP-55"
   [ "$output" = "TYP-55" ]
 }
+
+@test "pick_started_release returns the most recently created release as compact JSON" {
+  run pick_started_release <<< '{"data":{"releases":{"nodes":[
+    {"id":"r-old","name":"tapp 1.0","url":"https://linear.app/r-old","createdAt":"2026-08-01T00:00:00.000Z"},
+    {"id":"r-new","name":"tapp 1.2","url":"https://linear.app/r-new","createdAt":"2026-09-10T00:00:00.000Z"},
+    {"id":"r-mid","name":"tapp 1.1","url":"https://linear.app/r-mid","createdAt":"2026-08-20T00:00:00.000Z"}
+  ]}}}'
+  [ "$status" -eq 0 ]
+  [ "$output" = '{"id":"r-new","name":"tapp 1.2","url":"https://linear.app/r-new"}' ]
+}
+
+@test "pick_started_release prints nothing and fails when no release matched" {
+  run pick_started_release <<< '{"data":{"releases":{"nodes":[]}}}'
+  [ "$status" -ne 0 ]
+  [ "$output" = "" ]
+}
+
+@test "issue_release_status reports target when the issue is already on the target release" {
+  run issue_release_status r-new <<< '{"data":{"issue":{"id":"uuid","releases":{"nodes":[{"id":"r-new","name":"tapp 1.2"}]}}}}'
+  [ "$status" -eq 0 ]
+  [ "$output" = "target" ]
+}
+
+@test "issue_release_status reports other releases by name when the issue is elsewhere" {
+  run issue_release_status r-new <<< '{"data":{"issue":{"id":"uuid","releases":{"nodes":[{"id":"r-a","name":"cor 3.0"},{"id":"r-b","name":"tapp 1.1"}]}}}}'
+  [ "$status" -eq 0 ]
+  [ "$output" = "other cor 3.0, tapp 1.1" ]
+}
+
+@test "issue_release_status reports none when the issue is on no release" {
+  run issue_release_status r-new <<< '{"data":{"issue":{"id":"uuid","releases":{"nodes":[]}}}}'
+  [ "$status" -eq 0 ]
+  [ "$output" = "none" ]
+}

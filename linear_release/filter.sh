@@ -64,3 +64,31 @@ issue_release_status() {
       elif ($r | length) > 0 then "other " + ([$r[].name] | join(", "))
       else "none" end'
 }
+
+# tag_version NAME: print the trailing dotted-numeric version of a git tag or
+# Linear release name (tapp-v2.10.1 -> 2.10.1, "TAPP 2.10.1" -> 2.10.1).
+# Fails silently when NAME does not end in a version.
+tag_version() {
+  [[ $1 =~ ([0-9]+(\.[0-9]+)*)$ ]] || return 1
+  printf '%s\n' "${BASH_REMATCH[1]}"
+}
+
+# tag_family_glob TAG: print a `git tag --list` glob that matches the tags in
+# TAG's family, i.e. everything before its trailing version followed by a
+# digit: tapp-v2.10.1 -> 'tapp-v[0-9]*'. Component-wise, so tapp-v never
+# matches tapp-desktop-app-v. Fails when TAG has no trailing version.
+tag_family_glob() {
+  [[ $1 =~ ^(.*[^0-9.])?[0-9]+(\.[0-9]+)*$ ]] || return 1
+  printf '%s[0-9]*\n' "${BASH_REMATCH[1]}"
+}
+
+# previous_tag TAG: read tag names (one per line, any order) from stdin and
+# print the highest one that sorts strictly below TAG in version order. TAG
+# need not be present in the input. Fails with no output when nothing is
+# below TAG (first release of the family).
+previous_tag() {
+  { printf '%s\n' "$1"; cat; } | sort -uV | awk -v t="$1" '
+    $0 == t { if (prev != "") { print prev; found = 1 }; exit }
+    { prev = $0 }
+    END { exit !found }'
+}

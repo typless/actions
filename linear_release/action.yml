@@ -8,8 +8,10 @@ description: |
       hand-made release whose name starts with the prefix and whose stage type
       is `started` ("In progress"), and link the issues to it (needs
       `linear-api-key`). Fails when no such release exists.
+  The base of the commit range is taken from `since-tag`, or discovered from
+  local git history as the previous tag of the same family (see `since-tag`).
   Requires the caller to check out full history first
-  (actions/checkout with `fetch-depth: 0`).
+  (actions/checkout with `fetch-depth: 0`, which also fetches tags).
 
 inputs:
   linear-access-key:
@@ -37,8 +39,9 @@ inputs:
     required: false
     default: ''
   gh-token:
-    description: GitHub token. Only used to discover the previous release tag (via the generate-notes API) when `since-tag` is empty.
-    required: true
+    description: Unused. The previous tag is discovered from local git history; the input is kept so existing callers keep working.
+    required: false
+    default: ''
   tag:
     description: Git tag of this release (e.g. tapp-v1.2.3). Used to compute the commit range and, in sync mode, as the Linear release name and version.
     required: true
@@ -46,10 +49,15 @@ inputs:
     description: |
       Base of the commit range whose messages are scanned for issue IDs.
       Three modes:
-        - Empty (tag-push runs where HEAD is the tag itself): the previous
-          tag is auto-discovered the same way GitHub release notes would.
+        - Empty (tag-push runs where HEAD is the tag itself): the base is the
+          previous tag of `tag`'s family (tapp-v2.10.1 -> tapp-v2.10.0)
+          reachable from `commit`, found in local git history. Other tag
+          families in the repo (exporter-v*, ...) are ignored.
         - Equal to `tag` (anchor mode, e.g. backend release/* push between
-          tags): scans commits since that existing tag up to `commit`.
+          tags): scans commits since that existing tag up to `commit`. In
+          attach mode, when the in-progress Linear release has the same
+          version as `tag` (the tag was already pushed), the base is instead
+          the previous tag of the family, exactly as for a tag push.
         - Different from `tag`: explicit base for the range.
     required: false
     default: ''
@@ -82,7 +90,6 @@ runs:
         LINEAR_ACCESS_KEY: ${{ inputs.linear-access-key }}
         LINEAR_API_KEY: ${{ inputs.linear-api-key }}
         RELEASE_PREFIX: ${{ inputs.release-prefix }}
-        GH_TOKEN: ${{ inputs.gh-token }}
         TAG: ${{ inputs.tag }}
         SINCE_TAG: ${{ inputs.since-tag }}
         COMMIT_INPUT: ${{ inputs.commit }}
@@ -115,7 +122,8 @@ runs:
           || { echo "ERROR: commit '$COMMIT' not found in local history" >&2; exit 1; }
 
         # Pure helpers (normalize_service_path, extract_issue_ids,
-        # pick_started_release, issue_release_status).
+        # pick_started_release, issue_release_status, tag_version,
+        # tag_family_glob, previous_tag).
         source "$ACTION_PATH/filter.sh"
 
         release_id=""
@@ -146,28 +154,47 @@ runs:
           echo "Target release: $release_name ($(printf '%s' "$release" | jq -r '.url'))"
         fi
 
-        if [ -n "$SINCE_TAG" ]; then
-          # Caller supplies the base explicitly. tag == since-tag is valid and
-          # means "commits since that existing release tag up to COMMIT".
+        if [ -n "$SINCE_TAG" ] && [ "$SINCE_TAG" != "$TAG" ]; then
+          # Caller supplies the base explicitly.
           BASE="$SINCE_TAG"
         else
-          # Tag-push run with no anchor: discover the previous tag the same way
-          # GitHub's release notes would. Deliberately NOT `git describe` /
-          # nearest-reachable-tag: these are monorepos with several tag families
-          # (tapp-v*, exporter-v*, per-service tags), so the nearest tag by
-          # history is often from the wrong series. The generate-notes body
-          # always ends with
-          #   **Full Changelog**: https://github.com/O/R/compare/PREV...TAG
-          # or .../commits/TAG when there is no previous tag.
-          body=$(gh api -X POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" -f "tag_name=$TAG" --jq '.body')
-          changelog=$(printf '%s\n' "$body" | grep '^\*\*Full Changelog\*\*:' | tail -n1 || true)
-          BASE=$(printf '%s\n' "$changelog" | sed -nE 's|.*/compare/(.+)\.\.\..*|\1|p')
-          if [ -z "$BASE" ] && ! printf '%s\n' "$changelog" | grep -q '/commits/'; then
-            echo "ERROR: could not determine previous tag from generate-notes output:" >&2
-            printf '%s\n' "$changelog" >&2
+          # Tag-push run (since-tag empty) or anchor mode (since-tag == tag).
+          # Which commits belong to the release depends on whether TAG is the
+          # release being shipped or the last one already shipped:
+          #   - tag push: TAG is being shipped -> commits since the previous
+          #     tag of the same family.
+          #   - anchor, in-progress Linear release newer than TAG (tapp-v2.10.2
+          #     while TAG is tapp-v2.10.1): commits after TAG.
+          #   - anchor, in-progress Linear release IS TAG (tag already pushed,
+          #     release/* branch at or past it): commits since the previous
+          #     tag, same as a tag push. Anchoring on TAG here gives an empty
+          #     range and attaches nothing.
+          # The previous tag is looked up in local git history, restricted to
+          # TAG's family (tapp-v*, exporter-v*, ... coexist in these monorepos)
+          # and to tags reachable from COMMIT. Deliberately not GitHub's
+          # generate-notes API (it picks the latest published release of any
+          # family) and not `git describe` (nearest tag by history is often
+          # from another family).
+          tag_ver=$(tag_version "$TAG") || {
+            echo "ERROR: tag '$TAG' does not end with a version number (expected e.g. tapp-v1.2.3); pass since-tag explicitly" >&2
             exit 1
+          }
+          release_ver=""
+          if [ -n "$release_name" ]; then
+            release_ver=$(tag_version "$release_name" || true)
           fi
-          # Empty BASE here means first release: scan everything reachable from COMMIT.
+          if [ -n "$SINCE_TAG" ] && [ "$release_ver" != "$tag_ver" ]; then
+            BASE="$SINCE_TAG"
+            echo "Base: $BASE (anchor: commits after this existing tag)"
+          else
+            glob=$(tag_family_glob "$TAG")
+            BASE=$(git tag --merged "$COMMIT" --list "$glob" | previous_tag "$TAG") || BASE=""
+            if [ -n "$BASE" ]; then
+              echo "Base: $BASE (previous $glob tag before $TAG reachable from $COMMIT)"
+            else
+              echo "No $glob tag before $TAG reachable from $COMMIT: first release of this family, scanning everything reachable from $COMMIT"
+            fi
+          fi
         fi
 
         if [ -n "$BASE" ]; then

@@ -133,3 +133,70 @@ setup() {
   [ "$status" -eq 0 ]
   [ "$output" = "none" ]
 }
+
+@test "tag_version prints the trailing dotted version of a tag" {
+  run tag_version "tapp-v2.10.1"
+  [ "$status" -eq 0 ]
+  [ "$output" = "2.10.1" ]
+}
+
+@test "tag_version accepts a Linear release name with a space before the version" {
+  run tag_version "TAPP 2.10.1"
+  [ "$output" = "2.10.1" ]
+}
+
+@test "tag_version fails when the name has no trailing version" {
+  run tag_version "tapp hotfix"
+  [ "$status" -ne 0 ]
+  [ "$output" = "" ]
+}
+
+@test "tag_family_glob keeps everything before the trailing version" {
+  run tag_family_glob "tapp-v2.10.1"
+  [ "$status" -eq 0 ]
+  [ "$output" = "tapp-v[0-9]*" ]
+}
+
+@test "tag_family_glob handles a bare v prefix" {
+  run tag_family_glob "v1.2.3"
+  [ "$output" = "v[0-9]*" ]
+}
+
+@test "tag_family_glob fails when the tag has no trailing version" {
+  run tag_family_glob "latest"
+  [ "$status" -ne 0 ]
+  [ "$output" = "" ]
+}
+
+@test "previous_tag picks the highest tag strictly below TAG by version order" {
+  run previous_tag "tapp-v2.10.1" <<< $'tapp-v2.9.2\ntapp-v2.10.1\ntapp-v2.10.0\ntapp-v2.8.3'
+  [ "$status" -eq 0 ]
+  [ "$output" = "tapp-v2.10.0" ]
+}
+
+@test "previous_tag sorts numerically, not lexically" {
+  run previous_tag "tapp-v2.10.0" <<< $'tapp-v2.9.2\ntapp-v2.1.0\ntapp-v2.10.0'
+  [ "$output" = "tapp-v2.9.2" ]
+}
+
+@test "previous_tag works when TAG itself is not in the list" {
+  run previous_tag "tapp-v2.10.2" <<< $'tapp-v2.10.1\ntapp-v2.10.0'
+  [ "$output" = "tapp-v2.10.1" ]
+}
+
+@test "previous_tag ignores tags above TAG" {
+  run previous_tag "tapp-v2.10.1" <<< $'tapp-v2.11.0\ntapp-v2.10.1\ntapp-v2.10.0'
+  [ "$output" = "tapp-v2.10.0" ]
+}
+
+@test "previous_tag fails when nothing is below TAG" {
+  run previous_tag "tapp-v1.0.0" <<< $'tapp-v1.0.0\ntapp-v1.1.0'
+  [ "$status" -ne 0 ]
+  [ "$output" = "" ]
+}
+
+@test "previous_tag fails on empty input" {
+  run previous_tag "tapp-v1.0.0" <<< ""
+  [ "$status" -ne 0 ]
+  [ "$output" = "" ]
+}

@@ -1,0 +1,239 @@
+name: Linear Release Rollover
+description: |
+  Close the Linear release of a shipped tag and open the next patch release,
+  for scheduled pipelines whose releases linear_release fills in attach mode.
+  For tag tapp-v3.1.0 in a pipeline whose In Progress release is tapp-v3.1.0
+  (or an older, unshipped version such as tapp-v3.0.5, which is renamed):
+    1. create tapp-v3.1.1 in the pipeline's planned stage (reused if it exists),
+    2. move the tag's release to the completed stage; Linear then moves its
+       open issues to the next release and, when enabled on the pipeline,
+       generates release notes,
+    3. move tapp-v3.1.1 to the started stage, where linear_release attach
+       mode links issues from later release-branch pushes and hotfixes.
+  Safe to re-run for the same tag. Requires a checkout that has the repo's
+  tags (actions/checkout with `fetch-depth: 0` or `fetch-tags: true`): a
+  started release whose version already has a git tag counts as shipped.
+
+inputs:
+  linear-api-key:
+    description: Linear personal API key with write access to releases.
+    required: true
+  tag:
+    description: The shipped git tag, ending in an X.Y.Z version (e.g. tapp-v3.1.0).
+    required: true
+  pipeline:
+    description: Linear release pipeline ID or slug (e.g. typless-releases). Must be a scheduled pipeline.
+    required: true
+  release-prefix:
+    description: |
+      Case-insensitive prefix of the release names this action manages, the
+      same value as linear_release's `release-prefix` (e.g. `tapp`). Defaults
+      to the tag without its version (tapp-v3.1.0 -> tapp-v).
+    required: false
+    default: ''
+  dry-run:
+    description: Log the changes without writing to Linear.
+    required: false
+    default: 'false'
+
+outputs:
+  next-release:
+    description: Name of the release that is open for the next patch (e.g. tapp-v3.1.1).
+    value: ${{ steps.rollover.outputs.next-release }}
+
+runs:
+  using: composite
+  steps:
+    - name: Close the shipped release and open the next one
+      id: rollover
+      shell: bash
+      env:
+        LINEAR_API_KEY: ${{ inputs.linear-api-key }}
+        TAG: ${{ inputs.tag }}
+        PIPELINE: ${{ inputs.pipeline }}
+        RELEASE_PREFIX: ${{ inputs.release-prefix }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+
+        source "$ACTION_PATH/../linear_release/filter.sh"
+        source "$ACTION_PATH/rollover.sh"
+
+        [ -n "$LINEAR_API_KEY" ] || { echo "linear-api-key input required" >&2; exit 1; }
+        tag_ver=$(tag_version "$TAG") && next_ver=$(next_patch_version "$tag_ver") && prefix=$(tag_prefix "$TAG") || {
+          echo "ERROR: tag '$TAG' must end in an X.Y.Z version (e.g. tapp-v3.1.0)" >&2
+          exit 1
+        }
+        next_name="${prefix}${next_ver}"
+        name_prefix="${RELEASE_PREFIX:-$prefix}"
+
+        # The "already shipped" check below reads git tags. Without them every
+        # stale release would look unshipped and be renamed instead of closed.
+        git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || {
+          echo "ERROR: tag '$TAG' not found locally. Check out the repo with its tags (fetch-depth: 0 or fetch-tags: true)." >&2
+          exit 1
+        }
+
+        gql() {
+          local resp
+          resp=$(curl -fsS -X POST https://api.linear.app/graphql \
+            -H "Authorization: $LINEAR_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg q "$1" --argjson v "$2" '{query:$q, variables:$v}')")
+          if printf '%s' "$resp" | jq -e '.errors' >/dev/null 2>&1; then
+            echo "ERROR: Linear returned errors: $(printf '%s' "$resp" | jq -c '.errors')" >&2
+            return 1
+          fi
+          printf '%s' "$resp" | jq -c '.data'
+        }
+
+        # Runs a mutation unless dry-run; prints the data, or {} in dry-run.
+        mutate() {
+          local description="$1" query="$2" vars="$3"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "[dry-run] $description" >&2
+            echo '{}'
+            return 0
+          fi
+          echo "$description" >&2
+          gql "$query" "$vars"
+        }
+
+        create_mutation='mutation C($input: ReleaseCreateInput!) { releaseCreate(input: $input) { success release { id name url } } }'
+        update_mutation='mutation U($id: String!, $input: ReleaseUpdateInput!) { releaseUpdate(id: $id, input: $input) { success release { id name url } } }'
+
+        create_release() { # NAME STAGE_ID -> prints the new release id
+          local data
+          data=$(mutate "Creating release $1" "$create_mutation" \
+            "$(jq -n --arg name "$1" --arg p "$pipeline_id" --arg s "$2" '{input:{name:$name, version:$name, pipelineId:$p, stageId:$s}}')")
+          printf '%s' "$data" | jq -r '.releaseCreate.release.id // "dry-run"'
+        }
+
+        update_release() { # DESCRIPTION ID INPUT_JSON
+          mutate "$1" "$update_mutation" "$(jq -n --arg id "$2" --argjson input "$3" '{id:$id, input:$input}')" >/dev/null
+        }
+
+        set_stage() { # DESCRIPTION ID STAGE_ID
+          update_release "$1" "$2" "$(jq -n --arg s "$3" '{stageId:$s}')"
+        }
+
+        # --- Read the pipeline and its releases -----------------------------
+        pipeline_query='query P($id: String!) { releasePipeline(id: $id) { id name type stages { nodes { id name type position } } } }'
+        pipeline=$(gql "$pipeline_query" "$(jq -n --arg id "$PIPELINE" '{id:$id}')" | jq -c '.releasePipeline')
+        pipeline_id=$(printf '%s' "$pipeline" | jq -r '.id')
+        echo "Pipeline: $(printf '%s' "$pipeline" | jq -r '.name') ($pipeline_id)"
+        if [ "$(printf '%s' "$pipeline" | jq -r '.type')" != "scheduled" ]; then
+          echo "ERROR: pipeline '$PIPELINE' is not a scheduled pipeline" >&2
+          exit 1
+        fi
+        stages=$(printf '%s' "$pipeline" | jq -c '.stages.nodes')
+        planned_stage=$(printf '%s' "$stages" | stage_id planned) \
+          && started_stage=$(printf '%s' "$stages" | stage_id started) \
+          && completed_stage=$(printf '%s' "$stages" | stage_id completed) || {
+          echo "ERROR: pipeline needs a planned, a started and a completed stage; it has: $(printf '%s' "$stages" | jq -c '[.[].type]')" >&2
+          exit 1
+        }
+
+        releases_query='query R($pipeline: ID!, $prefix: String!) { releases(first: 250, filter: { pipeline: { id: { eq: $pipeline } }, name: { startsWithIgnoreCase: $prefix } }) { nodes { id name version url createdAt stage { type } } } }'
+        releases=$(gql "$releases_query" "$(jq -n --arg p "$pipeline_id" --arg prefix "$name_prefix" '{pipeline:$p, prefix:$prefix}')" | jq -c '.releases.nodes')
+
+        current=$(printf '%s' "$releases" | newest_started_release || true)
+        tagged=$(printf '%s' "$releases" | release_with_version "$tag_ver" || true)
+        next=$(printf '%s' "$releases" | release_with_version "$next_ver" || true)
+
+        # --- Decide what to do ----------------------------------------------
+        stale_id=""       # a started release that already shipped; complete it first
+        target_id=""      # the release of TAG; created when empty
+        target_stage=""
+        rename_id=""      # a started, unshipped older release that becomes TAG's release
+
+        if [ -n "$current" ]; then
+          cur_name=$(printf '%s' "$current" | jq -r '.name')
+          cur_id=$(printf '%s' "$current" | jq -r '.id')
+          echo "In progress: $cur_name"
+          if ! cur_ver=$(tag_version "$cur_name"); then
+            echo "ERROR: in-progress release '$cur_name' has no version at the end of its name; fix it in Linear and re-run" >&2
+            exit 1
+          fi
+          case "$(version_cmp "$cur_ver" "$tag_ver")" in
+            eq)
+              target_id="$cur_id"
+              target_stage=started
+              ;;
+            lt)
+              if git rev-parse -q --verify "refs/tags/${prefix}${cur_ver}" >/dev/null; then
+                # Shipped earlier but never closed (e.g. tapp-v3.0.4 still in
+                # progress when tapp-v3.0.5 ships).
+                stale_id="$cur_id"
+              elif [ -n "$tagged" ]; then
+                echo "ERROR: '$cur_name' is in progress but a release for $TAG already exists ($(printf '%s' "$tagged" | jq -r '.url')). Merge them by hand and re-run." >&2
+                exit 1
+              else
+                # Opened as the next patch, shipped as a minor or major.
+                rename_id="$cur_id"
+                target_id="$cur_id"
+                target_stage=started
+              fi
+              ;;
+            gt)
+              # A newer release is already open: this is a re-run, or an older
+              # tag shipped after the next one was opened. Only close TAG's
+              # release; the next patch is already in progress.
+              if [ -n "$tagged" ] && [ "$(printf '%s' "$tagged" | jq -r '.stage.type')" != "completed" ]; then
+                set_stage "Completing $(printf '%s' "$tagged" | jq -r '.name')" "$(printf '%s' "$tagged" | jq -r '.id')" "$completed_stage"
+              else
+                echo "$cur_name is newer than $TAG and is already in progress; nothing to do"
+              fi
+              echo "next-release=$cur_name" >> "${GITHUB_OUTPUT:-/dev/null}"
+              exit 0
+              ;;
+          esac
+        fi
+
+        if [ -z "$target_id" ] && [ -n "$tagged" ]; then
+          target_id=$(printf '%s' "$tagged" | jq -r '.id')
+          target_stage=$(printf '%s' "$tagged" | jq -r '.stage.type')
+        fi
+
+        # --- Apply ----------------------------------------------------------
+        # Every release that receives rolled-over issues exists before a
+        # release is completed. Otherwise Linear creates a release of its own
+        # to roll the open issues into.
+        if [ -z "$target_id" ]; then
+          target_id=$(create_release "$TAG" "$planned_stage")
+          target_stage=planned
+        fi
+        if [ -n "$rename_id" ]; then
+          update_release "Renaming $cur_name to $TAG" "$rename_id" "$(jq -n --arg n "$TAG" '{name:$n, version:$n}')"
+        fi
+
+        if [ -n "$next" ]; then
+          next_id=$(printf '%s' "$next" | jq -r '.id')
+          next_stage=$(printf '%s' "$next" | jq -r '.stage.type')
+          echo "Next release $next_name already exists ($next_stage)"
+        else
+          next_id=$(create_release "$next_name" "$planned_stage")
+          next_stage=planned
+        fi
+
+        if [ -n "$stale_id" ]; then
+          set_stage "Completing $cur_name, which shipped earlier" "$stale_id" "$completed_stage"
+        fi
+        if [ "$target_stage" != "completed" ]; then
+          set_stage "Completing $TAG" "$target_id" "$completed_stage"
+        else
+          echo "$TAG is already completed"
+        fi
+        if [ "$next_stage" = "planned" ]; then
+          set_stage "Starting $next_name" "$next_id" "$started_stage"
+        fi
+
+        echo "next-release=$next_name" >> "${GITHUB_OUTPUT:-/dev/null}"
+        {
+          echo "### Linear releases"
+          echo "- Completed: \`$TAG\`"
+          echo "- In progress: \`$next_name\`"
+          [ "$DRY_RUN" = "true" ] && echo "- Dry run: nothing was written to Linear"
+        } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+        true
